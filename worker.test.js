@@ -578,6 +578,40 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     assert.ok(rec.breaks[0].end, 'перерыв не должен остаться открытым — иначе он съест часы');
   });
 
+  await check('«Начал» и «Готово» пишут метки времени на сервере', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    await worker.fetch(jsonReq('/api/progress?date=' + DAY, 'POST', {
+      blockId: 'b1', status: 'active', startedAt: '1999-01-01T00:00:00.000Z'
+    }, tablet), env);
+    var b = JSON.parse(state.docs['day:' + DAY].body).blocks[0];
+    assert.ok(b.startedAt, 'начало должно быть записано');
+    assert.ok(new Date(b.startedAt).getFullYear() > 2020, 'время серверное, а не из тела запроса');
+    assert.strictEqual(b.doneAt, null);
+
+    await worker.fetch(jsonReq('/api/progress?date=' + DAY, 'POST', { blockId: 'b1', status: 'done' }, tablet), env);
+    b = JSON.parse(state.docs['day:' + DAY].body).blocks[0];
+    assert.ok(b.doneAt, 'конец должен быть записан');
+  });
+
+  await check('снятие статуса стирает метки времени', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    await worker.fetch(jsonReq('/api/progress?date=' + DAY, 'POST', { blockId: 'b1', status: 'active' }, tablet), env);
+    await worker.fetch(jsonReq('/api/progress?date=' + DAY, 'POST', { blockId: 'b1', status: 'done' }, tablet), env);
+    await worker.fetch(jsonReq('/api/progress?date=' + DAY, 'POST', { blockId: 'b1', status: 'planned' }, tablet), env);
+
+    var b = JSON.parse(state.docs['day:' + DAY].body).blocks[0];
+    assert.strictEqual(b.startedAt, null, 'половина замера врёт убедительнее, чем его отсутствие');
+    assert.strictEqual(b.doneAt, null);
+  });
+
   /* ---------- чтение ---------- */
 
   await check('/api/state отдаёт настройки, день и роль', async function () {

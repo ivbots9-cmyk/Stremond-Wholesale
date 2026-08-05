@@ -270,6 +270,21 @@
       'hours.unpaid': 'breaks are unpaid and deducted from the hours',
       'clock.outPaid': 'worked {worked} · {from}–{to} · {brk} on break',
 
+      'fact.actual': 'took {time}',
+      'fact.over': '{time} over plan',
+      'fact.under': '{time} under plan',
+      'fact.running': 'running {time}',
+      'music.title': 'Music',
+      'music.yourTurn': 'Your turn for music, {name}',
+      'music.turnOf': '{name} picks the music · {left} left',
+      'music.next': 'next: {name}',
+      'music.open': 'Open {name}\u2019s music',
+      'music.openMine': 'Open my music',
+      'music.link': 'Music link',
+      'music.linkHint': 'Radio, playlist, YouTube channel — whatever this person puts on. Opens in a new tab; the plan stays where it was.',
+      'music.turnLength': 'Music turn, minutes',
+      'music.turnLengthHint': 'How long one person\u2019s turn lasts before it passes on. Only people who are clocked in take part.',
+
       'lang.switch': 'Русский',
       'lang.switchHint': 'Switch language'
     },
@@ -516,6 +531,21 @@
       'hours.paid': 'перерывы оплачиваются и входят в часы',
       'hours.unpaid': 'перерывы не оплачиваются и вычтены из часов',
       'clock.outPaid': 'отработано {worked} · {from}–{to} · перерыв {brk}',
+
+      'fact.actual': 'заняло {time}',
+      'fact.over': 'дольше плана на {time}',
+      'fact.under': 'быстрее плана на {time}',
+      'fact.running': 'идёт {time}',
+      'music.title': 'Музыка',
+      'music.yourTurn': '{name}, твоя очередь ставить музыку',
+      'music.turnOf': 'музыку ставит {name} · осталось {left}',
+      'music.next': 'следующий: {name}',
+      'music.open': 'Включить музыку — {name}',
+      'music.openMine': 'Включить свою музыку',
+      'music.link': 'Ссылка на музыку',
+      'music.linkHint': 'Радио, плейлист, канал на YouTube — что человек слушает. Откроется в новой вкладке, план останется на месте.',
+      'music.turnLength': 'Очередь музыки, минут',
+      'music.turnLengthHint': 'Сколько длится очередь одного человека, прежде чем перейти дальше. Участвуют только те, кто отметился на смене.',
 
       'lang.switch': 'English',
       'lang.switchHint': 'Сменить язык'

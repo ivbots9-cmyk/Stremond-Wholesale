@@ -363,9 +363,30 @@ async function postProgress(request, env, url) {
   const block = doc.body.blocks.find((b) => b.id === blockId);
   if (!block) return json({ error: 'no block' }, 404);
 
+  const now = new Date().toISOString();
+
+  /*
+   * Метки времени ставятся на тех же нажатиях «Начал» и «Готово», что и
+   * раньше — отдельной кнопки-таймера нет. Время серверное, как и у
+   * прихода: по этим цифрам мы потом уточняем нормы, и часы планшета
+   * тут доверия не заслуживают.
+   *
+   * Снятие статуса стирает обе метки: половина замера выглядит как
+   * настоящий и врёт убедительнее, чем его отсутствие.
+   */
+  if (status === 'active') {
+    if (!block.startedAt) block.startedAt = now;
+    block.doneAt = null;
+  } else if (status === 'done') {
+    block.doneAt = now;
+  } else {
+    block.startedAt = null;
+    block.doneAt = null;
+  }
+
   block.status = status;
   if (body.doneQty != null) block.doneQty = Math.max(0, Number(body.doneQty) || 0);
-  block.statusAt = new Date().toISOString();
+  block.statusAt = now;
 
   /* Версию не проверяем: отметка «готово» не должна проигрывать гонку
      параллельной правке плана — потерять её обиднее, чем перезаписать. */

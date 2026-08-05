@@ -266,6 +266,30 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 .person.is-break { border-color: #f59e0b; background: #fffbeb; }
 .person.is-break .person__state { color: #b45309; font-weight: 600; }
 
+/* Музыка в окне сотрудника. Отделена линией: это не про смену. */
+.who__music {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  margin-top: 4px;
+}
+.who__music p { margin: 0 0 10px; font-size: 14px; color: var(--ink-soft); }
+.who__music b { color: var(--ink); }
+.who__music button {
+  width: 100%;
+  min-height: 52px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.who__music .is-mine { border-color: #2563eb; color: #2563eb; }
+
+/* Факт против плана на карточке задачи. */
+.tag--fact { background: #eef2ff; color: #3730a3; }
+.tag--over { background: #fef2f2; color: #991b1b; }
+.tag--under { background: #f0fdf4; color: #14532d; }
+
 /* ───────── табель ───────── */
 
 .hours__week { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
