@@ -11,6 +11,30 @@
 
   var P = window.WHPlan;
   var S = window.WHStore;
+  var T = window.WHI18n;
+
+  /*
+   * Единица «коробка» встречается и по-русски, и по-английски: подсказку
+   * про коробку от поставщика нельзя привязывать к одному написанию.
+   */
+  function isBoxUnit(unit) {
+    return unit === 'box' || unit === 'коробка';
+  }
+
+  /*
+   * Язык влияет и на то, как движок печатает время и даты, — он про
+   * словарь не знает, поэтому форматы отдаём ему сами.
+   */
+  function applyLangToEngine() {
+    P.setFormat({
+      min:     function (n) { return T.t('time.min', { n: n }); },
+      hour:    function (n) { return T.t('time.hour', { n: n }); },
+      hourMin: function (h, m) { return T.t('time.hourMin', { h: h, m: m }); },
+      date:    function (day, monthIndex) {
+        return T.t('date.format', { day: day, month: T.t('month.' + monthIndex) });
+      }
+    });
+  }
 
   var SAVE_DELAY = 700;      // склейка быстрых правок в одно сохранение
   var REFRESH_MS = 20000;    // как часто планшет подтягивает чужие правки
@@ -59,6 +83,8 @@
      ============================================================ */
 
   function boot() {
+    applyLangToEngine();
+    T.applyStatic();
     bindStaticHandlers();
     load().then(function () {
       refreshTimer = setInterval(maybeRefresh, REFRESH_MS);
@@ -67,11 +93,7 @@
   }
 
   /* Как роль называется на экране. Ключи те же, что у сервера. */
-  var ROLE_TITLES = {
-    tablet:  'Склад',
-    manager: 'Менеджер',
-    admin:   'Администратор'
-  };
+  function roleTitle(role) { return T.t('role.' + role); }
 
   /* Права живут в store, здесь только их копия для отрисовки. */
   function syncRole() {
@@ -80,7 +102,7 @@
   }
 
   function load() {
-    setSync('загрузка…');
+    setSync(T.t('sync.loading'));
     return S.load(app.date).then(function (data) {
       app.config = data.config || P.defaultConfig();
       syncRole();
@@ -93,7 +115,7 @@
            Гость день не создаёт: сервер ему это запретит, и незачем
            показывать ошибку тому, кто просто смотрит с телефона. */
         app.day = P.materialize(app.config, P.emptyDay(app.date));
-        if (S.can('tablet')) scheduleSave('день создан из шаблона', true);
+        if (S.can('tablet')) scheduleSave('day created from template', true);
       }
 
       recompute();
@@ -126,13 +148,13 @@
 
   function scheduleSave(reason, immediate) {
     app.dirty = true;
-    setSync('не сохранено');
+    setSync(T.t('sync.unsaved'));
     clearTimeout(saveTimer);
     saveTimer = setTimeout(doSave, immediate ? 0 : SAVE_DELAY);
 
     function doSave() {
       app.saving = true;
-      setSync('сохранение…');
+      setSync(T.t('sync.saving'));
       app.day.updatedAt = new Date().toISOString();
       S.saveDay(app.day, reason).then(function (r) {
         app.saving = false;
@@ -140,18 +162,18 @@
           /* Кто-то сохранил день раньше. Забираем свежую версию —
              молча затирать чужую правку хуже, чем потерять свою. */
           app.dirty = false;
-          setSync('план изменили с другого устройства, перечитано', true);
+          setSync(T.t('sync.planChanged'), true);
           return load();
         }
         if (r && r.error) {
-          setSync(r.error === 'forbidden' ? 'нет прав на правку' : ('не сохранено: ' + r.error), true);
+          setSync(r.error === 'forbidden' ? T.t('sync.noRights') : T.t('sync.notSavedErr', { error: r.error }), true);
           return;
         }
         app.dirty = false;
-        setSync('сохранено ' + P.fmt(minutesNow()));
+        setSync(T.t('sync.savedAt', { time: P.fmt(minutesNow()) }));
       }).catch(function (e) {
         app.saving = false;
-        setSync('не сохранено: ' + (e.message || e), true);
+        setSync(T.t('sync.notSavedErr', { error: e.message || e }), true);
       });
     }
   }
@@ -194,22 +216,22 @@
   function renderHeader() {
     var wd = P.weekdayOf(app.date);
     $('date-title').textContent = P.humanDate(app.date);
-    $('date-sub').textContent = wd.title + (isToday() ? ' · сегодня' : '');
+    $('date-sub').textContent = T.t('weekday.' + wd.key) + (isToday() ? ' · ' + T.t('date.today') : '');
 
     var t = app.view.totals;
     var stats = $('stats');
     stats.innerHTML = '';
-    stats.appendChild(stat(t.people + ' из ' + app.config.staff.length, 'на смене'));
-    stats.appendChild(stat(P.human(t.plannedMin), 'работы в плане'));
-    stats.appendChild(stat(t.loadPct + '%', 'загрузка', t.loadPct > 100));
-    stats.appendChild(stat(P.human(t.freeMin), 'свободно'));
-    stats.appendChild(stat(t.done + ' / ' + t.blocks, 'сделано'));
+    stats.appendChild(stat(t.people + ' ' + T.t('stat.ofTotal') + ' ' + app.config.staff.length, T.t('stat.onShift')));
+    stats.appendChild(stat(P.human(t.plannedMin), T.t('stat.planned')));
+    stats.appendChild(stat(t.loadPct + '%', T.t('stat.load'), t.loadPct > 100));
+    stats.appendChild(stat(P.human(t.freeMin), T.t('stat.free')));
+    stats.appendChild(stat(t.done + ' / ' + t.blocks, T.t('stat.done')));
 
     /* Кнопка показывает, кем сейчас вошли: на складе у планшета и у
        менеджера один и тот же экран, и перепутать роль легко. */
     var toggle = $('admin-toggle');
-    toggle.textContent = app.role ? ROLE_TITLES[app.role] : 'Войти';
-    toggle.title = app.role ? 'Выйти' : 'Войти по коду';
+    toggle.textContent = app.role ? roleTitle(app.role) : T.t('nav.signIn');
+    toggle.title = app.role ? T.t('nav.signOut') : T.t('nav.signInHint');
     toggle.className = 'btn btn--ghost' + (app.role ? ' btn--role is-' + app.role : '');
 
     $('setup-open').hidden = !app.admin;
@@ -238,7 +260,7 @@
       var dot = el('span', 'chip__dot');
       dot.style.background = s.color;
       chip.appendChild(dot);
-      chip.appendChild(el('span', null, s.name + (vac ? ' · отпуск' : '')));
+      chip.appendChild(el('span', null, s.name + (vac ? ' · ' + T.t('bar.vacation') : '')));
       if (!vac) {
         chip.addEventListener('click', function () { toggleAbsent(s.id); });
       }
@@ -246,13 +268,13 @@
     });
 
     var jobCount = (app.day.jobs || []).length;
-    $('jobs-open').textContent = jobCount ? 'Задание · ' + jobCount : 'Задание';
+    $('jobs-open').textContent = jobCount ? T.t('jobs.count', { n: jobCount }) : T.t('bar.jobs');
 
     var volumes = $('volumes');
     volumes.innerHTML = '';
     var tasks = P.volumeTasks(app.config, app.day);
     if (!tasks.length) {
-      volumes.appendChild(el('span', 'muted', 'Сегодня нет задач, которые считаются по количеству'));
+      volumes.appendChild(el('span', 'muted', T.t('jobs.noVolumeTasks')));
     }
     tasks.forEach(function (slot) {
       var box = el('div', 'volume');
@@ -267,7 +289,7 @@
         mutate(function () {
           app.day.volumes = app.day.volumes || {};
           app.day.volumes[slot.key] = v;
-        }, 'объём: ' + slot.title + ' = ' + v);
+        }, 'volume: ' + slot.title + ' = ' + v);
       });
       box.appendChild(input);
       box.appendChild(el('span', 'unit', slot.unit));
@@ -308,8 +330,8 @@
     var name = el('div', 'lane__name');
     name.appendChild(el('b', null, lane.staff.name));
     name.appendChild(el('span', null,
-      lane.vacation ? 'в отпуске'
-        : lane.absent ? 'сегодня нет на работе'
+      lane.vacation ? T.t('lane.vacation')
+        : lane.absent ? T.t('lane.absentToday')
           : P.fmt(lane.shift.start) + '–' + P.fmt(lane.shift.end)));
     head.appendChild(name);
 
@@ -317,15 +339,15 @@
       var load = el('div', 'load' + (lane.overMin ? ' load--over' : ''));
       load.appendChild(el('b', null, lane.loadPct + '%'));
       load.appendChild(el('span', null, lane.overMin
-        ? 'перегруз ' + P.human(lane.overMin)
-        : 'свободно ' + P.human(lane.freeMin)));
+        ? T.t('lane.over', { time: P.human(lane.overMin) })
+        : T.t('lane.free', { time: P.human(lane.freeMin) })));
       head.appendChild(load);
     }
     node.appendChild(head);
 
     var body = el('div', 'lane__body');
     if (!lane.items.length) {
-      body.appendChild(el('div', 'empty', lane.available ? 'Задач нет' : '—'));
+      body.appendChild(el('div', 'empty', lane.available ? T.t('lane.noTasks') : '—'));
     }
     lane.items.forEach(function (item) { body.appendChild(renderTask(item)); });
     node.appendChild(body);
@@ -353,19 +375,19 @@
     var time = el('div', 'task__time');
     if (idle || noTime) {
       time.appendChild(el('b', null, '—'));
-      time.appendChild(el('span', null, idle ? 'объём не задан' : P.human(item.duration)));
+      time.appendChild(el('span', null, idle ? T.t('task.noVolume') : P.human(item.duration)));
     } else {
       time.appendChild(el('b', null, P.fmt(item.start) + '–' + P.fmt(item.end)));
       time.appendChild(el('span', null, P.human(item.duration)));
     }
-    if (isNow) time.appendChild(el('span', 'tag tag--qty', 'сейчас'));
+    if (isNow) time.appendChild(el('span', 'tag tag--qty', T.t('lane.now')));
     node.appendChild(time);
 
     node.appendChild(el('div', 'task__title', P.blockTitle(app.config, b)));
 
     var meta = el('div', 'task__meta');
     if (b.mode === 'volume' && b.qty) {
-      meta.appendChild(el('span', 'tag tag--qty', b.qty + ' ' + P.plural(b.qty, task.unit || 'шт')));
+      meta.appendChild(el('span', 'tag tag--qty', b.qty + ' ' + P.plural(b.qty, task.unit || T.t('unit.pcs'))));
     }
     if (b.mode === 'time') {
       /* Для работы «до упора» полезнее выработка, а не слово «по
@@ -373,17 +395,17 @@
       var out = P.expectedOutput(app.config, b);
       meta.appendChild(out
         ? el('span', 'tag', '≈ ' + out.qty + ' ' + out.unit)
-        : el('span', 'tag', 'по времени'));
+        : el('span', 'tag', T.t('lane.byTime')));
     }
     var dest = P.DESTINATIONS.filter(function (d) { return d.key === b.dest; })[0];
     if (dest && dest.key) meta.appendChild(el('span', 'tag tag--dest', dest.title));
     if (b.fromStaffId) {
       var from = P.indexBy(app.config.staff)[b.fromStaffId];
-      meta.appendChild(el('span', 'tag tag--moved', 'передано от ' + (from ? from.name : '—')));
+      meta.appendChild(el('span', 'tag tag--moved', T.t('task.handedFrom', { name: from ? from.name : '—' })));
     }
     if (b.warn) meta.appendChild(el('span', 'tag tag--warn', b.warn));
-    if (item.crossedBreak) meta.appendChild(el('span', 'tag', 'с перерывом на ' + item.crossedBreak.toLowerCase()));
-    if (item.overtime) meta.appendChild(el('span', 'tag tag--warn', 'выходит за смену'));
+    if (item.crossedBreak) meta.appendChild(el('span', 'tag', T.t('task.withBreak', { name: item.crossedBreak.toLowerCase() })));
+    if (item.overtime) meta.appendChild(el('span', 'tag tag--warn', T.t('task.overtime')));
     if (b.note) meta.appendChild(el('span', 'tag tag--note', b.note));
     if (meta.childNodes.length) node.appendChild(meta);
 
@@ -393,7 +415,7 @@
        открывшего адрес, можно закрыть чужую задачу. */
     var mayMark = S.can('tablet');
 
-    var start = el('button', b.status === 'active' ? 'is-active' : '', 'Начал');
+    var start = el('button', b.status === 'active' ? 'is-active' : '', T.t('task.start'));
     start.type = 'button';
     start.disabled = !mayMark;
     start.addEventListener('click', function () {
@@ -401,7 +423,7 @@
     });
     act.appendChild(start);
 
-    var done = el('button', b.status === 'done' ? 'is-on' : '', b.status === 'done' ? 'Сделано' : 'Готово');
+    var done = el('button', b.status === 'done' ? 'is-on' : '', T.t(b.status === 'done' ? 'task.isDone' : 'task.done'));
     done.type = 'button';
     done.disabled = !mayMark;
     done.addEventListener('click', function () {
@@ -412,7 +434,7 @@
     if (app.admin) {
       var edit = el('button', 'edit', '✎');
       edit.type = 'button';
-      edit.setAttribute('aria-label', 'Изменить задачу');
+      edit.setAttribute('aria-label', T.t('task.edit'));
       edit.addEventListener('click', function () { openBlockEditor(b.id); });
       act.appendChild(edit);
     }
@@ -430,8 +452,8 @@
     av.style.background = '#dc2626';
     head.appendChild(av);
     var name = el('div', 'lane__name');
-    name.appendChild(el('b', null, 'Некому передать'));
-    name.appendChild(el('span', null, 'никто из доступных не может это взять'));
+    name.appendChild(el('b', null, T.t('lane.nobodyTitle')));
+    name.appendChild(el('span', null, T.t('lane.nobodyHint')));
     head.appendChild(name);
     node.appendChild(head);
 
@@ -448,16 +470,16 @@
 
   function renderFoot() {
     $('foot-mode').textContent = S.state.mode === 'local'
-      ? 'Локальный режим: план хранится только на этом устройстве'
-      : 'Общий план · правки видны на всех устройствах';
+      ? T.t('sync.modeLocal')
+      : T.t('sync.shared');
   }
 
   function setSync(text, isError) {
     var n = $('sync');
-    n.textContent = text || (S.state.mode === 'local' ? 'локально' : 'на связи');
+    n.textContent = text || T.t(S.state.mode === 'local' ? 'sync.local' : 'sync.online');
     n.className = 'sync' + (isError ? ' sync--err' : '');
     $('foot-saved').textContent = app.day && app.day.updatedAt
-      ? 'обновлён ' + new Date(app.day.updatedAt).toLocaleString('ru-RU')
+      ? T.t('sync.updatedAt', { time: new Date(app.day.updatedAt).toLocaleString(T.lang === 'ru' ? 'ru-RU' : 'en-US') })
       : '';
   }
 
@@ -467,7 +489,7 @@
 
   function setStatus(block, status) {
     if (!S.can('tablet')) {
-      setSync('чтобы отмечать выполнение, войдите по коду склада', true);
+      setSync(T.t('sync.needTablet'), true);
       return;
     }
     /* Оптимистично: кнопка должна отзываться мгновенно, иначе на
@@ -477,9 +499,9 @@
     renderHeader();
     renderBoard();
     S.progress(app.date, block.id, status, block.doneQty).then(function (r) {
-      if (r && r.error) setSync('отметка не сохранилась: ' + r.error, true);
+      if (r && r.error) setSync(T.t('sync.markFailed', { error: r.error }), true);
       else setSync('');
-    }).catch(function (e) { setSync('отметка не сохранилась: ' + e.message, true); });
+    }).catch(function (e) { setSync(T.t('sync.markFailed', { error: e.message }), true); });
   }
 
   function toggleAbsent(staffId) {
@@ -488,7 +510,7 @@
       var i = app.day.absent.indexOf(staffId);
       if (i >= 0) app.day.absent.splice(i, 1);
       else app.day.absent.push(staffId);
-    }, 'отсутствие: ' + staffId);
+    }, 'absence: ' + staffId);
   }
 
   function goDate(iso) {
@@ -511,20 +533,20 @@
           dest: '', note: '', pinnedStart: null, status: 'planned', doneQty: 0, fromStaffId: null
         };
 
-    $('block-title').textContent = blockId ? 'Задача' : 'Новая задача';
+    $('block-title').textContent = T.t(blockId ? 'block.titleEdit' : 'block.titleNew');
     $('block-delete').hidden = !blockId;
 
     fillSelect($('block-staff'), app.config.staff
       .filter(function (s) { return s.status !== 'left'; })
       .map(function (s) {
-        return { value: s.id, title: s.name + (P.isAvailable(s, app.day) ? '' : ' (нет на работе)') };
+        return { value: s.id, title: s.name + (P.isAvailable(s, app.day) ? '' : T.t('staff.notAtWork')) };
       }), b.staffId);
 
     fillSelect($('block-task'), app.config.tasks.map(function (t) {
       return { value: t.id, title: t.title };
     }), b.taskId);
 
-    fillSelect($('block-product'), [{ value: '', title: 'Без товара' }].concat(
+    fillSelect($('block-product'), [{ value: '', title: T.t('block.noProduct') }].concat(
       (app.config.products || []).map(function (p) { return { value: p.id, title: p.title }; })
     ), b.productId || '');
 
@@ -560,7 +582,7 @@
   function fillVariants(current) {
     var product = P.productOf(app.config, { productId: $('block-product').value });
     var colors = (product && product.colors) || [];
-    fillSelect($('block-variant'), [{ value: '', title: 'Все цвета' }].concat(
+    fillSelect($('block-variant'), [{ value: '', title: T.t('block.allColours') }].concat(
       colors.map(function (c) { return { value: c, title: c }; })
     ), current || '');
     $('field-variant').hidden = !colors.length;
@@ -569,7 +591,7 @@
   function fillPackSizes(current) {
     var product = P.productOf(app.config, { productId: $('block-product').value });
     var packs = (product && product.packs) || [];
-    fillSelect($('block-pack'), [{ value: '', title: 'Без фасовки' }].concat(
+    fillSelect($('block-pack'), [{ value: '', title: T.t('block.noPack') }].concat(
       packs.map(function (pk) { return { value: pk.id, title: pk.title }; })
     ), current == null ? '' : String(current));
     $('block-pack').disabled = !packs.length;
@@ -600,16 +622,20 @@
     if (mode === 'time') {
       var dur = Math.max(0, Number($('block-duration').value) || 0);
       var out = P.expectedOutput(app.config, { taskId: draft.taskId, productId: draft.productId, packSize: draft.packSize, mode: 'time', duration: dur });
-      $('mode-hint').textContent = 'Длительность задаётся руками — так работает переборка: сколько успели за отведённое время, столько успели.'
-        + (out ? ' За это время выйдет примерно ' + out.qty + ' ' + out.unit + '.' : '');
+      $('mode-hint').textContent = T.t('block.hintTime')
+        + (out ? T.t('block.outApprox', { qty: out.qty, unit: out.unit }) : '');
     } else {
-      $('mode-hint').textContent = 'Время считается само: количество × норма (' + norm + ' мин за ' + P.unitFor(app.config, draft) + ').';
+      $('mode-hint').textContent = T.t('block.calcAuto', { norm: norm, unit: P.unitFor(app.config, draft) });
       var qty = Number($('block-qty').value) || 0;
       $('qty-calc').textContent = qty
-        ? qty + ' × ' + norm + ' мин = ' + P.human(P.durationOf(app.config, {
+        ? T.t('block.calcLine', {
+          qty: qty,
+          norm: norm,
+          total: P.human(P.durationOf(app.config, {
             taskId: draft.taskId, productId: draft.productId, packSize: draft.packSize, mode: 'volume', qty: qty
           }))
-        : 'Количество берётся из объёма на день, если оставить 0.';
+        })
+        : T.t('block.qtyFromVolume');
     }
   }
 
@@ -653,7 +679,7 @@
         app.day.volumes = app.day.volumes || {};
         app.day.volumes[key] = others + data.qty;
       }
-    }, app.editingBlockId ? 'правка задачи' : 'добавлена задача');
+    }, app.editingBlockId ? 'task edited' : 'task added');
 
     closeModal('block-modal');
   }
@@ -662,7 +688,7 @@
     if (!app.editingBlockId) return;
     mutate(function () {
       app.day.blocks = app.day.blocks.filter(function (x) { return x.id !== app.editingBlockId; });
-    }, 'задача удалена');
+    }, 'task deleted');
     closeModal('block-modal');
   }
 
@@ -700,12 +726,12 @@
     var jobs = app.day.jobs || [];
 
     if (!jobs.length) {
-      box.appendChild(el('p', 'muted', 'Пусто. Добавьте строку — например «Фасовка · Frooties 2 lb — 180 пакетов → TikTok».'));
+      box.appendChild(el('p', 'muted', T.t('jobs.placeholder')));
     }
 
     var grid = el('div', 'grid grid--jobs');
     if (jobs.length) {
-      ['Что', 'Товар', 'Цвет', 'Сколько', 'Куда', ''].forEach(function (h) {
+      [T.t('jobs.colWhat'), T.t('jobs.colProduct'), T.t('jobs.colColour'), T.t('jobs.colHowMuch'), T.t('jobs.colWhere'), ''].forEach(function (h) {
         grid.appendChild(el('span', 'grid__head', h));
       });
     }
@@ -733,7 +759,7 @@
 
       var colors = (P.productOf(app.config, job) || {}).colors || [];
       var variant = document.createElement('select');
-      fillSelect(variant, [{ value: '', title: colors.length ? 'Все цвета' : '—' }].concat(
+      fillSelect(variant, [{ value: '', title: colors.length ? T.t('block.allColours') : '—' }].concat(
         colors.map(function (c) { return { value: c, title: c }; })
       ), job.variant || '');
       variant.disabled = !colors.length;
@@ -756,7 +782,7 @@
         input.onchange = function () { job.duration = Math.max(0, Number(input.value) || 0); renderJobs(); };
       }
       amount.appendChild(input);
-      amount.appendChild(el('span', 'unit', job.mode === 'volume' ? P.unitFor(app.config, job) : 'мин'));
+      amount.appendChild(el('span', 'unit', job.mode === 'volume' ? P.unitFor(app.config, job) : T.t('unit.min')));
       grid.appendChild(amount);
 
       var dest = document.createElement('select');
@@ -788,13 +814,12 @@
       .reduce(function (sum, s) { return sum + P.capacityOf(app.config, s); }, 0);
 
     if (!jobs.length) { $('jobs-summary').textContent = ''; return; }
-    $('jobs-summary').textContent = 'Работы на ' + P.human(minutes)
-      + ' · смена на сегодня ' + P.human(capacity)
-      + (minutes > capacity ? ' — не влезет' : '');
+    $('jobs-summary').textContent = T.t('jobs.work', { work: P.human(minutes), capacity: P.human(capacity) })
+      + (minutes > capacity ? T.t('jobs.wontFit') : '');
   }
 
   function productOptions() {
-    var out = [{ value: '', title: 'Без товара' }];
+    var out = [{ value: '', title: T.t('block.noProduct') }];
     (app.config.products || []).forEach(function (p) {
       out.push({ value: p.id, title: p.title });
       (p.packs || []).forEach(function (pk) {
@@ -816,15 +841,15 @@
       return j.mode === 'volume' ? Number(j.qty) > 0 : Number(j.duration) > 0;
     });
     if (!jobs.length) {
-      alert('Задание пустое — распределять нечего.');
+      alert(T.t('jobs.emptyAlert'));
       return;
     }
-    if (!confirm('Собрать план дня из задания? Текущая расстановка задач будет заменена.')) return;
+    if (!confirm(T.t('jobs.confirmApply'))) return;
 
     mutate(function () {
       app.day.jobs = jobs;
       P.autoAssign(app.config, app.day);
-    }, 'план собран из задания');
+    }, 'plan built from job list');
     closeModal('jobs-modal');
   }
 
@@ -834,15 +859,15 @@
     var jobs = (app.day.jobs || []).map(function (j) {
       return P.cloneJob(j);
     });
-    if (!jobs.length) { alert('Задание пустое.'); return; }
+    if (!jobs.length) { alert(T.t('jobs.emptyAlert2')); return; }
 
     var date = P.shiftISO(app.date, 1);
     S.loadDay(date).then(function (day) {
       var target = day || P.emptyDay(date);
       target.jobs = jobs;
-      return S.saveDayAt(target, 'задание записано на ' + date).then(function (r) {
-        if (r && r.error) { alert('Не удалось записать: ' + r.error); return; }
-        alert('Задание записано на ' + P.humanDate(date) + '. Утром откройте этот день и нажмите «Распределить».');
+      return S.saveDayAt(target, 'job list saved for ' + date).then(function (r) {
+        if (r && r.error) { alert(T.t('jobs.writeFailed', { error: r.error })); return; }
+        alert(T.t('jobs.savedFor', { date: P.humanDate(date) }));
       });
     });
   }
@@ -852,7 +877,7 @@
   function pullTomorrowJobs() {
     S.loadDay(app.date).then(function (day) {
       if (!day || !day.jobs || !day.jobs.length) {
-        alert('На этот день заранее ничего не записано.');
+        alert(T.t('jobs.nothingTomorrow'));
         return;
       }
       app.day.jobs = day.jobs;
@@ -868,6 +893,13 @@
     app.draftConfig = P.clone(app.config);
     showTab('templates');
     openModal('setup-modal');
+  }
+
+  /* Какая вкладка настроек открыта сейчас — нужно, чтобы перерисовать
+     её после смены языка, не сбрасывая пользователя на первую. */
+  function activeTab() {
+    var on = $('setup-tabs').querySelector('.is-on');
+    return on ? on.getAttribute('data-tab') : 'templates';
   }
 
   function showTab(name) {
@@ -889,16 +921,16 @@
     var box = $('tab-templates');
     box.innerHTML = '';
     box.appendChild(el('p', 'muted',
-      'Шаблон — это «что обычно делают в такой день недели». План на конкретную дату собирается из него, но правки дня шаблон не меняют.'));
+      T.t('setup.tplIntro')));
 
     P.WEEKDAYS.forEach(function (wd) {
       var list = app.draftConfig.templates[wd.key] = app.draftConfig.templates[wd.key] || [];
       var det = el('details', 'tpl-day');
-      var sum = el('summary', null, wd.title + ' · ' + list.length + ' задач');
+      var sum = el('summary', null, T.t('setup.tplTasks', { title: T.t('weekday.' + wd.key), n: list.length }));
       det.appendChild(sum);
 
       var grid = el('div', 'grid grid--tpl');
-      ['Кто', 'Что', 'Товар', 'Расчёт', 'Время / доля', 'Куда', ''].forEach(function (h) {
+      [T.t('setup.colWho'), T.t('setup.colWhat'), T.t('jobs.colProduct'), T.t('setup.colCalc'), T.t('setup.colTimeShare'), T.t('setup.colWhere'), ''].forEach(function (h) {
         grid.appendChild(el('span', 'grid__head', h));
       });
 
@@ -917,7 +949,7 @@
            и называется на складе, разносить их по двум спискам в
            плотной таблице неудобно. */
         var product = document.createElement('select');
-        var options = [{ value: '', title: 'Без товара' }];
+        var options = [{ value: '', title: T.t('block.noProduct') }];
         (app.draftConfig.products || []).forEach(function (p) {
           options.push({ value: p.id, title: p.title });
           (p.packs || []).forEach(function (pk) {
@@ -934,8 +966,8 @@
 
         var mode = document.createElement('select');
         fillSelect(mode, [
-          { value: 'time', title: 'По времени' },
-          { value: 'volume', title: 'По количеству' }
+          { value: 'time', title: T.t('block.byTime') },
+          { value: 'volume', title: T.t('block.byVolume') }
         ], t.mode);
         mode.onchange = function () { t.mode = mode.value; renderTemplatesTab(); };
         grid.appendChild(mode);
@@ -946,12 +978,12 @@
         if (t.mode === 'time') {
           val.step = '5';
           val.value = t.duration || 0;
-          val.title = 'минут';
+          val.title = T.t('setup.minutes');
           val.onchange = function () { t.duration = Math.max(0, Number(val.value) || 0); };
         } else {
           val.step = '1';
           val.value = t.share || 1;
-          val.title = 'доля от дневного объёма';
+          val.title = T.t('setup.shareOfVolume');
           val.onchange = function () { t.share = Math.max(1, Number(val.value) || 1); };
         }
         grid.appendChild(val);
@@ -969,7 +1001,7 @@
 
       det.appendChild(grid);
 
-      var add = el('button', 'btn btn--sm btn--ghost', '+ Добавить в ' + wd.title.toLowerCase());
+      var add = el('button', 'btn btn--sm btn--ghost', T.t('setup.addTo', { day: T.t('weekday.' + wd.key).toLowerCase() }));
       add.type = 'button';
       add.style.marginTop = '10px';
       add.onclick = function () {
@@ -999,14 +1031,14 @@
     var box = $('tab-norms');
     box.innerHTML = '';
     box.appendChild(el('p', 'muted',
-      'Сколько минут уходит на одну единицу. Норма ищется от частного к общему: сначала «товар + фасовка», потом «товар», потом общая норма операции.'));
+      T.t('setup.normsIntro')));
 
     app.draftConfig.tasks.forEach(function (task) {
       var det = el('details', 'tpl-day');
-      det.appendChild(el('summary', null, task.title + ' · ' + (task.unit || 'без единицы')));
+      det.appendChild(el('summary', null, task.title + ' · ' + (task.unit || T.t('setup.noUnit'))));
 
       var grid = el('div', 'grid grid--norms');
-      ['Что считаем', 'Мин / ед.', 'Это же в час', ''].forEach(function (h) {
+      [T.t('setup.colCounted'), T.t('setup.colMinPer'), T.t('setup.colPerHour'), ''].forEach(function (h) {
         grid.appendChild(el('span', 'grid__head', h));
       });
 
@@ -1040,8 +1072,8 @@
      а для фасовочных работ — по каждой фасовке отдельно. */
   function normRows(task) {
     var rows = [{
-      title: 'Базовая норма',
-      hint: 'если товар не указан',
+      title: T.t('setup.baseNorm'),
+      hint: T.t('setup.baseNormHint'),
       get: function () { return Number(task.minPerUnit) || 0; },
       set: function (v) { task.minPerUnit = v; }
     }];
@@ -1056,7 +1088,7 @@
       }
       packs.forEach(function (pk) {
         rows.push(normRow(task, p.id + ':' + pk.id, p.title + ' ' + pk.title,
-          pk.bagsPerBox ? pk.bagsPerBox + ' в коробке' : 'нет данных по коробке'));
+          pk.bagsPerBox ? T.t('setup.perBoxN', { n: pk.bagsPerBox }) : T.t('setup.noBoxData')));
       });
     });
 
@@ -1090,8 +1122,8 @@
 
   function boxHint(product, task) {
     var inb = product.inbound;
-    if (task.unit !== 'коробка' || !inb || !inb.perBox) return '';
-    return 'от поставщика ' + inb.perBox + ' × ' + inb.unitSize;
+    if (!isBoxUnit(task.unit) || !inb || !inb.perBox) return '';
+    return T.t('setup.fromSupplier', { n: inb.perBox, size: inb.unitSize });
   }
 
   function hourly(minPerUnit, unit) {
@@ -1099,17 +1131,17 @@
     if (!n) return '—';
     var per = 60 / n;
     var qty = per >= 10 ? Math.round(per) : Math.round(per * 10) / 10;
-    return qty + ' ' + P.plural(qty, unit || 'шт') + ' / час';
+    return T.t('lane.perHour', { value: qty, unit: P.plural(qty, unit || T.t('unit.pcs')) });
   }
 
   function renderTasksTab() {
     var box = $('tab-tasks');
     box.innerHTML = '';
     box.appendChild(el('p', 'muted',
-      'Норма — сколько минут уходит на одну единицу. Из неё считается время для задач «по количеству». Поставьте свои значения: расчёт по чужим нормам смысла не имеет.'));
+      T.t('setup.normsIntro2')));
 
     var grid = el('div', 'grid grid--tasks');
-    ['Задача', 'Единица', 'Мин/ед.', 'Расчёт', 'Важность', ''].forEach(function (h) {
+    [T.t('setup.colTask'), T.t('setup.colUnit'), T.t('setup.colMinPer'), T.t('setup.colCalc'), T.t('setup.colImportance'), ''].forEach(function (h) {
       grid.appendChild(el('span', 'grid__head', h));
     });
 
@@ -1121,7 +1153,7 @@
 
       var unit = document.createElement('input');
       unit.value = t.unit || '';
-      unit.placeholder = 'пакет';
+      unit.placeholder = T.t('unit.pcs');
       unit.onchange = function () { t.unit = unit.value.trim(); };
       grid.appendChild(unit);
 
@@ -1135,8 +1167,8 @@
 
       var mode = document.createElement('select');
       fillSelect(mode, [
-        { value: 'time', title: 'По времени' },
-        { value: 'volume', title: 'По количеству' }
+        { value: 'time', title: T.t('block.byTime') },
+        { value: 'volume', title: T.t('block.byVolume') }
       ], t.mode || 'time');
       mode.onchange = function () { t.mode = mode.value; };
       grid.appendChild(mode);
@@ -1150,7 +1182,7 @@
       del.type = 'button';
       del.onclick = function () {
         var used = app.day.blocks.some(function (b) { return b.taskId === t.id; });
-        if (used && !confirm('Задача «' + t.title + '» стоит в сегодняшнем плане. Всё равно удалить из справочника?')) return;
+        if (used && !confirm(T.t('setup.taskUsed', { title: t.title }))) return;
         app.draftConfig.tasks.splice(i, 1);
         renderTasksTab();
       };
@@ -1159,12 +1191,12 @@
 
     box.appendChild(grid);
 
-    var add = el('button', 'btn btn--sm btn--ghost', '+ Новая задача');
+    var add = el('button', 'btn btn--sm btn--ghost', T.t('setup.newTask'));
     add.type = 'button';
     add.style.marginTop = '12px';
     add.onclick = function () {
       app.draftConfig.tasks.push({
-        id: P.uid('task'), title: 'Новая задача', mode: 'time', unit: 'шт',
+        id: P.uid('task'), title: T.t('setup.newTaskName'), mode: 'time', unit: T.t('unit.pcs'),
         minPerUnit: 1, priority: 2, color: '#64748b'
       });
       renderTasksTab();
@@ -1176,7 +1208,7 @@
     var box = $('tab-staff');
     box.innerHTML = '';
     box.appendChild(el('p', 'muted',
-      'Навыки: если ничего не отмечено — человек берётся за любую работу. Отмечайте, только когда нужно ограничить, что ему можно передавать.'));
+      T.t('setup.skillsIntro')));
 
     app.draftConfig.staff.forEach(function (s, i) {
       var card = el('div', 'tpl-day');
@@ -1189,9 +1221,9 @@
 
       var status = document.createElement('select');
       fillSelect(status, [
-        { value: 'active', title: 'Работает' },
-        { value: 'vacation', title: 'В отпуске' },
-        { value: 'left', title: 'Не работает у нас' }
+        { value: 'active', title: T.t('setup.statusActive') },
+        { value: 'vacation', title: T.t('setup.statusVacation') },
+        { value: 'left', title: T.t('setup.statusLeft') }
       ], s.status);
       status.onchange = function () { s.status = status.value; };
       row.appendChild(status);
@@ -1205,7 +1237,7 @@
       var del = el('button', 'row-del', '✕');
       del.type = 'button';
       del.onclick = function () {
-        if (!confirm('Удалить ' + s.name + ' из списка?')) return;
+        if (!confirm(T.t('setup.removePerson', { name: s.name }))) return;
         app.draftConfig.staff.splice(i, 1);
         renderStaffTab();
       };
@@ -1232,11 +1264,11 @@
       box.appendChild(card);
     });
 
-    var add = el('button', 'btn btn--sm btn--ghost', '+ Сотрудник');
+    var add = el('button', 'btn btn--sm btn--ghost', T.t('setup.addPerson'));
     add.type = 'button';
     add.onclick = function () {
       app.draftConfig.staff.push({
-        id: P.uid('s'), name: 'Новый сотрудник', color: '#64748b',
+        id: P.uid('s'), name: T.t('setup.newPerson'), color: '#64748b',
         status: 'active', skills: [], shift: null
       });
       renderStaffTab();
@@ -1249,17 +1281,17 @@
     box.innerHTML = '';
     var sh = app.draftConfig.shift;
 
-    box.appendChild(timeField('Начало смены', sh.start, function (v) { sh.start = v; }));
-    box.appendChild(timeField('Конец смены', sh.end, function (v) { sh.end = v; }));
+    box.appendChild(timeField(T.t('setup.shiftStart'), sh.start, function (v) { sh.start = v; }));
+    box.appendChild(timeField(T.t('setup.shiftEnd'), sh.end, function (v) { sh.end = v; }));
 
-    box.appendChild(el('h2', null, 'Перерывы'));
-    box.appendChild(el('p', 'muted', 'Перерыв не отменяет задачу, а сдвигает её конец: попал обед в середину упаковки — упаковка закончится позже.'));
+    box.appendChild(el('h2', null, T.t('setup.breaks')));
+    box.appendChild(el('p', 'muted', T.t('setup.breaksIntro')));
 
     (sh.breaks || []).forEach(function (br, i) {
       var grid = el('div', 'grid grid--staff');
       var title = document.createElement('input');
       title.value = br.title;
-      title.onchange = function () { br.title = title.value.trim() || 'Перерыв'; };
+      title.onchange = function () { br.title = title.value.trim() || T.t('setup.breakName'); };
       grid.appendChild(title);
 
       var start = document.createElement('input');
@@ -1274,7 +1306,7 @@
       dur.min = '0';
       dur.step = '5';
       dur.value = br.duration;
-      dur.title = 'минут';
+      dur.title = T.t('setup.minutes');
       dur.onchange = function () { br.duration = Math.max(0, Number(dur.value) || 0); };
       grid.appendChild(dur);
 
@@ -1286,12 +1318,12 @@
       box.appendChild(grid);
     });
 
-    var add = el('button', 'btn btn--sm btn--ghost', '+ Перерыв');
+    var add = el('button', 'btn btn--sm btn--ghost', T.t('setup.addBreak'));
     add.type = 'button';
     add.style.marginTop = '10px';
     add.onclick = function () {
       sh.breaks = sh.breaks || [];
-      sh.breaks.push({ title: 'Перерыв', start: '15:00', duration: 15 });
+      sh.breaks.push({ title: T.t('setup.breakName'), start: '15:00', duration: 15 });
       renderShiftTab();
     };
     box.appendChild(add);
@@ -1307,30 +1339,28 @@
   function renderAccessSection(box) {
     if (app.role !== 'admin') return;
 
-    box.appendChild(el('h2', null, 'Доступ'));
+    box.appendChild(el('h2', null, T.t('setup.access')));
 
     if (S.state.mode !== 'local') {
       box.appendChild(el('p', 'muted',
-        'Коды хранятся в секретах Cloudflare, не в настройках и не в репозитории. ' +
-        'Сменить код: npx wrangler secret put WH_PIN_TABLET (или _MANAGER, или _ADMIN).'));
+        T.t('setup.accessServer')));
       var have = S.state.roles || [];
       ['tablet', 'manager', 'admin'].forEach(function (r) {
         var on = have.indexOf(r) >= 0;
         box.appendChild(el('p', 'muted',
-          (on ? '● ' : '○ ') + ROLE_TITLES[r] + ' — ' + (on ? 'код задан' : 'код не задан, вход закрыт')));
+          (on ? '● ' : '○ ') + roleTitle(r) + ' — ' + T.t(on ? 'setup.accessSet' : 'setup.accessUnset')));
       });
       return;
     }
 
     box.appendChild(el('p', 'muted',
-      'В локальном режиме коды лежат на этом же устройстве и защищают только от случайного касания. ' +
-      'Настоящая проверка появляется после подключения сервера — см. README.'));
+      T.t('setup.accessLocal')));
 
     app.draftConfig.access = app.draftConfig.access || {};
     var pins = S.localPins(app.draftConfig);
     app.draftConfig.access.pins = pins;
 
-    [['tablet', 'Склад (планшет)'], ['manager', 'Менеджер'], ['admin', 'Администратор']]
+    [['tablet', T.t('setup.accessTablet')], ['manager', T.t('role.manager')], ['admin', T.t('role.admin')]]
       .forEach(function (pair) {
         var input = document.createElement('input');
         input.value = pins[pair[0]];
@@ -1360,12 +1390,12 @@
   function renderLogTab() {
     var box = $('tab-log');
     box.innerHTML = '';
-    box.appendChild(el('p', 'muted', 'Кто и когда менял план.'));
+    box.appendChild(el('p', 'muted', T.t('setup.logIntro')));
     S.history(80).then(function (r) {
       if (!r || !r.items || !r.items.length) {
         box.appendChild(el('p', 'muted', S.state.mode === 'local'
-          ? 'В локальном режиме журнал не ведётся.'
-          : 'Пока пусто.'));
+          ? T.t('setup.logLocal')
+          : T.t('setup.logEmpty')));
         return;
       }
       r.items.forEach(function (it) {
@@ -1373,7 +1403,7 @@
         var t = el('time', null, new Date(it.at).toLocaleString('ru-RU'));
         row.appendChild(t);
         row.appendChild(el('span', null,
-          (ROLE_TITLES[it.actor] || it.actor) + ' · ' + (it.detail || it.action) +
+          (T.t('role.' + it.actor) || it.actor) + ' · ' + (it.detail || it.action) +
           (it.target ? ' (' + it.target + ')' : '')));
         box.appendChild(row);
       });
@@ -1386,14 +1416,14 @@
     render();
     S.saveConfig(app.config).then(function (r) {
       if (r && r.conflict) {
-        setSync('настройки изменили с другого устройства, перечитано', true);
+        setSync(T.t('setup.changedElsewhere'), true);
         return load();
       }
       if (r && r.error) {
-        setSync('настройки не сохранены: ' + r.error, true);
+        setSync(T.t('setup.notSaved', { error: r.error }), true);
         return;
       }
-      setSync('настройки сохранены');
+      setSync(T.t('setup.saved'));
       closeModal('setup-modal');
     });
   }
@@ -1412,10 +1442,12 @@
     $('pin-input').value = '';
     $('pin-err').textContent = '';
     $('pin-hint').textContent = S.state.mode === 'local'
-      ? 'Локальные коды по умолчанию: склад ' + S.DEFAULT_LOCAL_PINS.tablet +
-        ', менеджер ' + S.DEFAULT_LOCAL_PINS.manager +
-        ', администратор ' + S.DEFAULT_LOCAL_PINS.admin
-      : 'Введите свой код. Права определятся сами.';
+      ? T.t('pin.hintLocal', {
+        tablet: S.DEFAULT_LOCAL_PINS.tablet,
+        manager: S.DEFAULT_LOCAL_PINS.manager,
+        admin: S.DEFAULT_LOCAL_PINS.admin
+      })
+      : T.t('pin.hint');
     openModal('pin-modal');
     setTimeout(function () { $('pin-input').focus(); }, 50);
   }
@@ -1428,13 +1460,13 @@
       if (r && r.ok) {
         syncRole();
         closeModal('pin-modal');
-        setSync('вход: ' + (ROLE_TITLES[app.role] || app.role));
+        setSync(T.t('pin.signedInAs', { role: roleTitle(app.role) }));
         /* Роль сменилась — то, что было закрыто, могло открыться:
            перечитываем день, чтобы не гадать по старому снимку. */
         load();
         return;
       }
-      $('pin-err').textContent = r && r.hint ? r.hint : 'Неверный код';
+      $('pin-err').textContent = r && r.hint ? r.hint : T.t('pin.wrong');
       $('pin-input').value = '';
     });
   }
@@ -1444,6 +1476,28 @@
      ============================================================ */
 
   function bindStaticHandlers() {
+    /*
+     * Переключатель языка. Кнопка показывает язык, НА КОТОРЫЙ переключит,
+     * а не текущий: так понятнее, что будет по нажатию.
+     */
+    var langBtn = $('lang-toggle');
+    function paintLang() {
+      langBtn.textContent = T.other().toUpperCase();
+      langBtn.title = T.t('lang.switchHint');
+    }
+    paintLang();
+    langBtn.onclick = function () {
+      T.setLang(T.other(), function () {
+        applyLangToEngine();
+        paintLang();
+        /* Настройки открыты — перерисовываем и их, иначе половина
+           экрана осталась бы на прежнем языке. */
+        if (!$('setup-modal').hidden && app.draftConfig) showTab(activeTab());
+        recompute();
+        render();
+      });
+    };
+
     $('prev-day').onclick = function () { goDate(P.shiftISO(app.date, -1)); };
     $('next-day').onclick = function () { goDate(P.shiftISO(app.date, 1)); };
     $('today').onclick = function () { goDate(P.todayISO()); };
@@ -1465,14 +1519,14 @@
     $('jobs-tomorrow').onclick = pullTomorrowJobs;
 
     $('rebuild').onclick = function () {
-      if (!confirm('Собрать день заново из шаблона? Ручные правки этого дня пропадут.')) return;
+      if (!confirm(T.t('setup.confirmRebuild'))) return;
       mutate(function () {
         var volumes = app.day.volumes;
         var absent = app.day.absent;
         app.day = P.materialize(app.config, P.emptyDay(app.date));
         app.day.volumes = volumes;
         app.day.absent = absent;
-      }, 'день собран заново из шаблона');
+      }, 'day rebuilt from template');
     };
 
     $('block-save').onclick = saveBlock;
