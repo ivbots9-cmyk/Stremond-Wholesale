@@ -293,12 +293,17 @@
       });
     }
     if (st === 'out') {
-      var worked = P.workedMinutes(app.day, staff.id);
-      return T.t('clock.out', {
+      var worked = P.workedMinutes(app.day, staff.id, P.paidBreaks(app.config));
+      var brk = P.breakMinutes(app.day, staff.id);
+      var base = {
         worked: worked == null ? '—' : P.human(worked),
         from: hhmmOf(rec.in),
         to: hhmmOf(rec.out)
-      });
+      };
+      /* Перерыв показываем, только если он был: иначе строка шумит. */
+      if (!brk) return T.t('clock.out', base);
+      base.brk = P.human(brk);
+      return T.t('clock.outPaid', base);
     }
     return '';
   }
@@ -1527,6 +1532,24 @@
     };
     box.appendChild(add);
 
+    /*
+     * Оплата перерывов стоит рядом с самими перерывами, а не в «Часах»:
+     * это свойство смены, а табель только показывает результат.
+     */
+    box.appendChild(el('h2', null, T.t('setup.paidBreaks')));
+    var paidWrap = el('label', 'field field--check');
+    var paid = document.createElement('input');
+    paid.type = 'checkbox';
+    paid.checked = P.paidBreaks(app.draftConfig);
+    paid.onchange = function () {
+      app.draftConfig.rules = app.draftConfig.rules || {};
+      app.draftConfig.rules.paidBreaks = paid.checked;
+    };
+    paidWrap.appendChild(paid);
+    paidWrap.appendChild(el('span', null, T.t('setup.paidBreaks')));
+    box.appendChild(paidWrap);
+    box.appendChild(el('p', 'muted', T.t('setup.paidBreaksHint')));
+
     renderAccessSection(box);
   }
 
@@ -1703,6 +1726,9 @@
     grid.appendChild(el('div', 'hours__row--sum', money(totalPay)));
 
     body.appendChild(grid);
+
+    body.appendChild(el('p', 'hours__note',
+      T.t(P.paidBreaks(app.config) ? 'hours.paid' : 'hours.unpaid')));
 
     var copy = el('button', 'btn btn--sm btn--ghost', T.t('hours.copy'));
     copy.type = 'button';

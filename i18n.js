@@ -264,6 +264,12 @@
       'hours.copy': 'Copy for the bookkeeper',
       'hours.copied': 'copied to clipboard',
 
+      'setup.paidBreaks': 'Breaks are paid',
+      'setup.paidBreaksHint': 'Paid: time is counted from check-in to clock-out, breaks included. Unpaid: breaks are deducted. Affects the Hours tab and the pay figure.',
+      'hours.paid': 'breaks are paid and included in the hours',
+      'hours.unpaid': 'breaks are unpaid and deducted from the hours',
+      'clock.outPaid': 'worked {worked} · {from}–{to} · {brk} on break',
+
       'lang.switch': 'Русский',
       'lang.switchHint': 'Switch language'
     },
@@ -504,6 +510,12 @@
       'hours.empty': 'На этой неделе отметок пока нет.',
       'hours.copy': 'Скопировать для бухгалтера',
       'hours.copied': 'скопировано в буфер',
+
+      'setup.paidBreaks': 'Перерывы оплачиваются',
+      'setup.paidBreaksHint': 'Оплачиваются: время считается от прихода до ухода, перерыв внутри. Не оплачиваются: перерывы вычитаются. Влияет на вкладку «Часы» и на сумму.',
+      'hours.paid': 'перерывы оплачиваются и входят в часы',
+      'hours.unpaid': 'перерывы не оплачиваются и вычтены из часов',
+      'clock.outPaid': 'отработано {worked} · {from}–{to} · перерыв {brk}',
 
       'lang.switch': 'English',
       'lang.switchHint': 'Сменить язык'
