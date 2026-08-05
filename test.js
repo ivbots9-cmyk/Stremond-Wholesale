@@ -64,10 +64,10 @@ check('hhmm/fmt — время ходит туда и обратно', function 
   assert.strictEqual(P.fmt(P.hhmm('16:50')), '16:50');
 });
 
-check('human — часы и минуты по-русски', function () {
-  assert.strictEqual(P.human(45), '45 мин');
-  assert.strictEqual(P.human(120), '2 ч');
-  assert.strictEqual(P.human(150), '2 ч 30 мин');
+check('human — часы и минуты, по умолчанию по-английски', function () {
+  assert.strictEqual(P.human(45), '45 min');
+  assert.strictEqual(P.human(120), '2 h');
+  assert.strictEqual(P.human(150), '2 h 30 min');
 });
 
 check('склонение единиц', function () {
@@ -78,6 +78,13 @@ check('склонение единиц', function () {
   assert.strictEqual(P.plural(21, 'коробка'), 'коробка');
   assert.strictEqual(P.plural(2.5, 'коробка'), 'коробки');
   assert.strictEqual(P.plural(5, 'бушель'), 'бушель', 'незнакомую единицу коверкать нельзя');
+
+  /* Английские единицы идут по той же таблице: одна форма для 1,
+     другая для всего остального. */
+  assert.strictEqual(P.plural(1, 'box'), 'box');
+  assert.strictEqual(P.plural(3, 'box'), 'boxes');
+  assert.strictEqual(P.plural(10, 'box'), 'boxes');
+  assert.strictEqual(P.plural(2.5, 'bag'), 'bags');
 });
 
 check('weekdayOf и переход через границу месяца', function () {
@@ -153,9 +160,9 @@ check('у нормы своя единица: Starburst в коробках, Jol
   var sb = P.normOf(cfg, { taskId: 'sort', productId: 'starburst' });
   var jr = P.normOf(cfg, { taskId: 'sort', productId: 'jolly' });
 
-  assert.strictEqual(sb.unit, 'коробка');
+  assert.strictEqual(sb.unit, 'box');
   assert.strictEqual(sb.min, 15, '4 коробки в час');
-  assert.strictEqual(jr.unit, 'пакет');
+  assert.strictEqual(jr.unit, 'bag');
   /* 10–11 пакетов в час → около 5,7 минуты на пакет */
   assert.ok(jr.min > 5 && jr.min < 6.5, 'норма Jolly должна быть около 5,7 мин на пакет');
 });
@@ -164,12 +171,12 @@ check('выработка за отведённое время', function () {
   var cfg = P.defaultConfig();
   var sb = P.expectedOutput(cfg, { taskId: 'sort', productId: 'starburst', mode: 'time', duration: 150 });
   assert.strictEqual(sb.qty, 10, '2,5 часа Starburst = 10 коробок');
-  assert.strictEqual(sb.unit, 'коробок');
+  assert.strictEqual(sb.unit, 'boxes');
 
   var jr = P.expectedOutput(cfg, { taskId: 'sort', productId: 'jolly', mode: 'time', duration: 150 });
   assert.ok(jr.qty > 25 && jr.qty < 27, '2,5 часа Jolly ≈ 26 пакетов, получено ' + jr.qty);
   /* 26,3 — дробное, значит родительный падеж единственного числа */
-  assert.strictEqual(jr.unit, 'пакета');
+  assert.strictEqual(jr.unit, 'bags');
 });
 
 check('у задачи по количеству выработки нет', function () {
@@ -209,12 +216,12 @@ check('паллета — 28 коробок', function () {
 
 check('подпись работы включает товар, фасовку и цвет', function () {
   var cfg = P.defaultConfig();
-  assert.strictEqual(P.blockTitle(cfg, { taskId: 'sort', productId: 'starburst' }), 'Переборка по цветам · Starburst');
+  assert.strictEqual(P.blockTitle(cfg, { taskId: 'sort', productId: 'starburst' }), 'Colour sorting · Starburst');
   assert.strictEqual(
     P.blockTitle(cfg, { taskId: 'pack', productId: 'jolly', packSize: '2lb', variant: 'Watermelon' }),
-    'Фасовка (взвешивание) · Jolly Rancher 2 lb · Watermelon'
+    'Weighing / bagging · Jolly Rancher 2 lb · Watermelon'
   );
-  assert.strictEqual(P.blockTitle(cfg, { taskId: 'clean' }), 'Порядок на складе');
+  assert.strictEqual(P.blockTitle(cfg, { taskId: 'clean' }), 'Warehouse tidy-up');
 });
 
 /* ---------- деление объёма ---------- */
@@ -415,7 +422,7 @@ check('перерыв сдвигает конец задачи, а не отме
   day.blocks = [{ id: '1', staffId: 'kris', taskId: 'sort', mode: 'time', duration: 150 }];
   var item = lane(P.schedule(cfg, day), 'kris').items[0];
   assert.strictEqual(P.fmt(item.end), '12:10');
-  assert.strictEqual(item.crossedBreak, 'Мини-брейк');
+  assert.strictEqual(item.crossedBreak, 'Short break');
 });
 
 check('чужой перерыв на человека не влияет', function () {
@@ -457,7 +464,7 @@ check('переполненная смена помечается, а не об�
   var s = P.schedule(cfg, day);
   assert.ok(lane(s, 'kris').overMin > 0, 'перегруз должен считаться');
   assert.ok(lane(s, 'kris').items[0].overtime);
-  assert.ok(s.warnings.some(function (w) { return /переполнена/.test(w.text); }));
+  assert.ok(s.warnings.some(function (w) { return w.code === 'overloaded'; }));
 });
 
 check('долгая сидячая работа подряд помечается', function () {
@@ -469,7 +476,7 @@ check('долгая сидячая работа подряд помечаетс�
   ];
   var s = P.schedule(cfg, day);
   assert.strictEqual(lane(s, 'kris').sittingStreak, 240);
-  assert.ok(s.warnings.some(function (w) { return /сидячей работы подряд/.test(w.text); }));
+  assert.ok(s.warnings.some(function (w) { return w.code === 'sittingStreak'; }));
 });
 
 check('отпускник не попадает в сводку доступных', function () {
@@ -560,7 +567,7 @@ check('что не влезло — видно в предупреждениях
   day.jobs = [P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 5000, dest: 'amazon' })];
   P.autoAssign(cfg, day);
   var s = P.schedule(cfg, day);
-  assert.ok(s.warnings.some(function (w) { return /Не влезает/.test(w.text); }));
+  assert.ok(s.warnings.some(function (w) { return w.code === 'overflow'; }));
 });
 
 check('свободное время добивается переборкой', function () {

@@ -37,14 +37,19 @@
 
   /* Порядок как в календаре, а не как в Date.getDay() (там неделя
      начинается с воскресенья). index — то, что вернёт getDay(). */
+  /*
+   * title/short — запасной вариант на случай, если движок работает без
+   * интерфейса (тесты, Node). Экран берёт названия по key из словаря
+   * переводов, а не отсюда.
+   */
   var WEEKDAYS = [
-    { key: 'mon', index: 1, title: 'Понедельник', short: 'Пн' },
-    { key: 'tue', index: 2, title: 'Вторник', short: 'Вт' },
-    { key: 'wed', index: 3, title: 'Среда', short: 'Ср' },
-    { key: 'thu', index: 4, title: 'Четверг', short: 'Чт' },
-    { key: 'fri', index: 5, title: 'Пятница', short: 'Пт' },
-    { key: 'sat', index: 6, title: 'Суббота', short: 'Сб' },
-    { key: 'sun', index: 0, title: 'Воскресенье', short: 'Вс' }
+    { key: 'mon', index: 1, title: 'Monday', short: 'Mon' },
+    { key: 'tue', index: 2, title: 'Tuesday', short: 'Tue' },
+    { key: 'wed', index: 3, title: 'Wednesday', short: 'Wed' },
+    { key: 'thu', index: 4, title: 'Thursday', short: 'Thu' },
+    { key: 'fri', index: 5, title: 'Friday', short: 'Fri' },
+    { key: 'sat', index: 6, title: 'Saturday', short: 'Sat' },
+    { key: 'sun', index: 0, title: 'Sunday', short: 'Sun' }
   ];
 
   /*
@@ -55,16 +60,16 @@
   var DESTINATIONS = [
     { key: '', title: '—', priority: 2 },
     { key: 'amazon', title: 'Amazon', priority: 1 },
-    { key: 'orders', title: 'Заказы', priority: 1 },
+    { key: 'orders', title: 'Orders', priority: 1 },
     { key: 'tiktok', title: 'TikTok', priority: 2 },
     { key: 'walmart', title: 'Walmart', priority: 3 },
-    { key: 'bulk', title: 'В балк', priority: 3 }
+    { key: 'bulk', title: 'To bulk', priority: 3 }
   ];
 
   var PRIORITIES = [
-    { value: 1, title: 'Критично', hint: 'должно уйти сегодня' },
-    { value: 2, title: 'Важно', hint: 'по плану на сегодня' },
-    { value: 3, title: 'Если успеем', hint: 'можно перенести' }
+    { value: 1, title: 'Critical', hint: 'must ship today' },
+    { value: 2, title: 'Important', hint: 'planned for today' },
+    { value: 3, title: 'If time allows', hint: 'can be moved' }
   ];
 
   var STATUSES = ['planned', 'active', 'done'];
@@ -86,14 +91,34 @@
     return pad(h) + ':' + pad(v % 60);
   }
 
+  /*
+   * Форматирование времени и дат зависит от языка, но движок не должен
+   * знать про словарь: он считает и в Node, где интерфейса нет. Поэтому
+   * язык подставляется снаружи через setFormat, а по умолчанию тут
+   * английский.
+   */
+  var format = {
+    min:     function (n) { return n + ' min'; },
+    hour:    function (n) { return n + ' h'; },
+    hourMin: function (h, m) { return h + ' h ' + m + ' min'; },
+    date:    function (day, monthIndex) { return MONTHS_EN[monthIndex - 1] + ' ' + day; }
+  };
+
+  var MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  function setFormat(next) {
+    format = Object.assign({}, format, next || {});
+  }
+
   /* «2 ч 30 мин» — на планшете читается быстрее, чем «150 мин». */
   function human(min) {
     var v = Math.max(0, Math.round(min));
     var h = Math.floor(v / 60);
     var m = v % 60;
-    if (!h) return m + ' мин';
-    if (!m) return h + ' ч';
-    return h + ' ч ' + m + ' мин';
+    if (!h) return format.min(m);
+    if (!m) return format.hour(h);
+    return format.hourMin(h, m);
   }
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -104,13 +129,25 @@
    * заведут в настройках руками, возвращаем как есть — лучше
    * несклонённое слово, чем угаданное неверно.
    */
+  /*
+   * Английские формы попадают в ту же таблицу: правило ниже даёт для них
+   * верный результат само собой — 1 берёт первую форму, всё остальное
+   * вторую или третью, а они у английского совпадают.
+   */
   var PLURALS = {
     'коробка': ['коробка', 'коробки', 'коробок'],
     'пакет': ['пакет', 'пакета', 'пакетов'],
     'заказ': ['заказ', 'заказа', 'заказов'],
     'бин': ['бин', 'бина', 'бинов'],
     'паллета': ['паллета', 'паллеты', 'паллет'],
-    'шт': ['шт', 'шт', 'шт']
+    'шт': ['шт', 'шт', 'шт'],
+
+    'box': ['box', 'boxes', 'boxes'],
+    'bag': ['bag', 'bags', 'bags'],
+    'order': ['order', 'orders', 'orders'],
+    'bin': ['bin', 'bins', 'bins'],
+    'pallet': ['pallet', 'pallets', 'pallets'],
+    'pcs': ['pcs', 'pcs', 'pcs']
   };
 
   function plural(n, unit) {
@@ -149,10 +186,8 @@
   }
 
   function humanDate(iso) {
-    var months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-      'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
     var p = String(iso).split('-');
-    return Number(p[2]) + ' ' + months[Number(p[1]) - 1];
+    return format.date(Number(p[2]), Number(p[1]));
   }
 
   /* ============================================================
@@ -184,7 +219,7 @@
   function defaultConfig() {
     return {
       version: 3,
-      title: 'План склада',
+      title: 'Warehouse plan',
 
       /* Общая смена — запасной вариант для тех, у кого не задана своя. */
       shift: {
@@ -197,17 +232,17 @@
          * пустым: одни уходят в 13:30, другие в 14:00.
          */
         breaks: [
-          { title: 'Мини-брейк', start: '11:50', duration: 10, staffIds: [] },
-          { title: 'Перерыв', start: '13:30', duration: 20, staffIds: ['kris', 'aisulu'] },
-          { title: 'Перерыв', start: '14:00', duration: 20, staffIds: ['eva', 'toni'] }
+          { title: 'Short break', start: '11:50', duration: 10, staffIds: [] },
+          { title: 'Lunch', start: '13:30', duration: 20, staffIds: ['kris', 'aisulu'] },
+          { title: 'Lunch', start: '14:00', duration: 20, staffIds: ['eva', 'toni'] }
         ]
       },
 
       staff: [
-        { id: 'kris', name: 'Крис', color: '#c2410c', status: 'active', skills: [], shift: { start: '09:30', end: '16:50' } },
-        { id: 'aisulu', name: 'Айсулу', color: '#7c3aed', status: 'vacation', skills: [], shift: { start: '09:30', end: '16:50' } },
-        { id: 'eva', name: 'Ева', color: '#0f9d76', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } },
-        { id: 'toni', name: 'Тони', color: '#2f6fed', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } }
+        { id: 'kris', name: 'Chris', color: '#c2410c', status: 'active', skills: [], shift: { start: '09:30', end: '16:50' } },
+        { id: 'aisulu', name: 'Aisulu', color: '#7c3aed', status: 'vacation', skills: [], shift: { start: '09:30', end: '16:50' } },
+        { id: 'eva', name: 'Eva', color: '#0f9d76', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } },
+        { id: 'toni', name: 'Toni', color: '#2f6fed', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } }
       ],
 
       /*
@@ -223,7 +258,7 @@
         prod('starburst', 'Starburst', {
           inbound: { perBox: 6, unitSize: '50 oz' },
           sortable: true,
-          colors: ['Красный', 'Розовый', 'Оранжевый', 'Жёлтый'],
+          colors: ['Red', 'Pink', 'Orange', 'Yellow'],
           packs: [pack('1lb', '1 lb', 36, '18×12×10')]
         }),
         prod('jolly', 'Jolly Rancher', {
@@ -236,7 +271,7 @@
             pack('5lb', '5 lb', null, '')
           ]
         }),
-        prod('jolly_grape', 'Jolly Rancher Grape (прозрачный пакет)', {
+        prod('jolly_grape', 'Jolly Rancher Grape (clear bag)', {
           packs: [pack('2lb', '2 lb', 21, '18×12×10')]
         }),
         prod('frooties', 'Tootsie Frooties Mix', {
@@ -311,43 +346,43 @@
        */
       tasks: [
         {
-          id: 'sort', title: 'Переборка по цветам', mode: 'time', unit: 'коробка',
+          id: 'sort', title: 'Colour sorting', mode: 'time', unit: 'box',
           minPerUnit: 15, priority: 1, color: '#f59e0b', sitting: true,
           byProduct: {
             /* подтверждено: 4 коробки в час */
-            starburst: { min: 15, unit: 'коробка' },
+            starburst: { min: 15, unit: 'box' },
             /* подтверждено: 10–11 пакетов в час, берём 10,5 */
-            jolly: { min: 5.7, unit: 'пакет' }
+            jolly: { min: 5.7, unit: 'bag' }
           }
         },
         {
-          id: 'pack', title: 'Фасовка (взвешивание)', mode: 'volume', unit: 'пакет',
+          id: 'pack', title: 'Weighing / bagging', mode: 'volume', unit: 'bag',
           minPerUnit: 1, priority: 1, color: '#16a34a',
           byProduct: {}   // уточнить: минут на пакет по фасовкам
         },
         {
-          id: 'seal', title: 'Силинг', mode: 'volume', unit: 'пакет',
+          id: 'seal', title: 'Sealing', mode: 'volume', unit: 'bag',
           minPerUnit: 0.5, priority: 1, color: '#0ea5e9',
           byProduct: {}   // уточнить
         },
         {
-          id: 'box', title: 'Укладка в коробки', mode: 'volume', unit: 'коробка',
+          id: 'box', title: 'Boxing', mode: 'volume', unit: 'box',
           minPerUnit: 5, priority: 2, color: '#0d9488', byProduct: {}   // уточнить
         },
         {
-          id: 'pallet', title: 'Сборка паллеты', mode: 'volume', unit: 'коробка',
+          id: 'pallet', title: 'Pallet building', mode: 'volume', unit: 'box',
           minPerUnit: 2, priority: 2, color: '#0f766e', byProduct: {}   // уточнить
         },
         {
-          id: 'orders', title: 'Сборка заказов', mode: 'volume', unit: 'заказ',
+          id: 'orders', title: 'Order picking', mode: 'volume', unit: 'order',
           minPerUnit: 2, priority: 1, color: '#e11d48', byProduct: {}   // уточнить
         },
         {
-          id: 'ship', title: 'Отгрузка', mode: 'time', unit: 'коробка',
+          id: 'ship', title: 'Shipping', mode: 'time', unit: 'box',
           minPerUnit: 2, priority: 1, color: '#334155', byProduct: {}
         },
         {
-          id: 'clean', title: 'Порядок на складе', mode: 'time', unit: '',
+          id: 'clean', title: 'Warehouse tidy-up', mode: 'time', unit: '',
           minPerUnit: 0, priority: 3, color: '#64748b', byProduct: {}
         }
       ],
@@ -654,7 +689,8 @@
         if (b.staffId && !isAvailable(byId[b.staffId], day)) {
           b.fromStaffId = b.fromStaffId || b.staffId;
           b.staffId = null;
-          b.warn = 'некому передать';
+          /* Код, а не текст: строку соберёт экран на своём языке. */
+          b.warn = 'nobody';
         }
       });
       return day;
@@ -686,7 +722,7 @@
 
       b.fromStaffId = b.fromStaffId || b.staffId || null;
       b.staffId = pick.id;
-      b.warn = skilled.length ? '' : 'задача вне навыков';
+      b.warn = skilled.length ? '' : 'noSkill';
       load[pick.id] += durationOf(config, b);
     });
 
@@ -1062,34 +1098,43 @@
       });
     });
 
+    /*
+     * Предупреждения отдаются кодом и параметрами, а не готовой строкой:
+     * движок считает и в Node, где языка интерфейса нет, а экран сам
+     * решает, на каком языке это показать. minutes отдаём числом —
+     * форматирование тоже дело экрана.
+     */
     lanes.forEach(function (l) {
       if (!l.available && l.items.length) {
-        warnings.push({ level: 'error', text: l.staff.name + ': задачи стоят на том, кого нет на работе' });
+        warnings.push({ level: 'error', code: 'absentHasTasks', name: l.staff.name });
       }
       if (l.available && l.overMin > 0) {
-        warnings.push({ level: 'warn', text: l.staff.name + ': смена переполнена на ' + human(l.overMin) });
+        warnings.push({ level: 'warn', code: 'overloaded', name: l.staff.name, minutes: l.overMin });
       }
       if (l.available && l.plannedMin === 0) {
-        warnings.push({ level: 'info', text: l.staff.name + ': на сегодня нет задач' });
+        warnings.push({ level: 'info', code: 'noTasks', name: l.staff.name });
       }
       if (l.available && l.sittingStreak > maxStreak) {
-        warnings.push({
-          level: 'warn',
-          text: l.staff.name + ': ' + human(l.sittingStreak) + ' сидячей работы подряд — стоит разбавить'
-        });
+        warnings.push({ level: 'warn', code: 'sittingStreak', name: l.staff.name, minutes: l.sittingStreak });
       }
     });
 
     blocks.forEach(function (b) {
       if (!b.staffId) {
-        warnings.push({ level: 'error', text: blockTitle(config, b) + ': некому передать' });
+        warnings.push({ level: 'error', code: 'nobodyToTake', title: blockTitle(config, b) });
       } else if (b.warn) {
-        warnings.push({ level: 'warn', text: (byId[b.staffId] || {}).name + ': ' + blockTitle(config, b) + ' — ' + b.warn });
+        warnings.push({
+          level: 'warn',
+          code: 'blockWarn',
+          name: (byId[b.staffId] || {}).name,
+          title: blockTitle(config, b),
+          detail: b.warn
+        });
       }
     });
 
     (day.overflow || []).forEach(function (job) {
-      warnings.push({ level: 'error', text: 'Не влезает в смену: ' + blockTitle(config, job) });
+      warnings.push({ level: 'error', code: 'overflow', title: blockTitle(config, job) });
     });
 
     var totalPlanned = lanes.reduce(function (s, l) { return s + (l.available ? l.plannedMin : 0); }, 0);
@@ -1179,6 +1224,7 @@
     hhmm: hhmm,
     fmt: fmt,
     human: human,
+    setFormat: setFormat,
     todayISO: todayISO,
     shiftISO: shiftISO,
     weekdayOf: weekdayOf,

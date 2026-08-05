@@ -456,6 +456,34 @@ h2 { margin: 0 0 12px; font-size: 20px; }
   .date { min-width: 160px; }
 }
 
+/*
+ * Планшет, поставленный вертикально. Главное здесь — уместить всех людей
+ * на один экран: колонка, до которой надо доскроллить, на складе просто
+ * не существует. При ширине 810 (iPad портретом) стандартные 300px дают
+ * две колонки из четырёх, поэтому здесь они уже.
+ */
+@media (min-width: 680px) and (max-width: 1100px) and (orientation: portrait) {
+  .board {
+    grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  /* Шапка вертикально сваливается в три строки и съедает экран. */
+  .top { gap: 10px; padding: 6px 12px; }
+  .top__stats { gap: 12px; }
+  .stat b { font-size: 15px; }
+  .stat span { font-size: 10px; }
+  .date { min-width: 130px; }
+  .date b { font-size: 17px; }
+
+  /* Плотнее карточки — но кнопки остаются пальцевого размера. */
+  .lane__head { padding: 8px 10px; }
+  .task { padding: 8px 10px; }
+  .task__act button { min-height: 42px; }
+  .bar { padding: 8px 12px; gap: 12px; }
+}
+
 @media (max-width: 720px) {
   .top { gap: 10px; }
   .top__stats { order: 3; width: 100%; gap: 14px; }

@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>План склада</title>
+<title>Warehouse plan</title>
 <meta name="theme-color" content="#0f172a">
 <meta name="robots" content="noindex, nofollow">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f172a'/><path d='M7 12h18M7 17h18M7 22h11' stroke='white' stroke-width='2.4' stroke-linecap='round'/></svg>">
@@ -13,42 +13,43 @@
 
 <header class="top">
   <div class="top__date">
-    <button class="nav-btn" id="prev-day" type="button" aria-label="Предыдущий день">‹</button>
+    <button class="nav-btn" id="prev-day" type="button" data-i18n-aria="nav.prevDay" aria-label="Previous day">‹</button>
     <div class="date">
       <b id="date-title">—</b>
       <span id="date-sub">—</span>
     </div>
-    <button class="nav-btn" id="next-day" type="button" aria-label="Следующий день">›</button>
-    <button class="nav-btn nav-btn--wide" id="today" type="button">Сегодня</button>
+    <button class="nav-btn" id="next-day" type="button" data-i18n-aria="nav.nextDay" aria-label="Next day">›</button>
+    <button class="nav-btn nav-btn--wide" id="today" type="button" data-i18n="nav.today">Today</button>
   </div>
 
   <div class="top__stats" id="stats"></div>
 
   <div class="top__act">
     <span class="sync" id="sync">…</span>
-    <button class="btn btn--ghost" id="admin-toggle" type="button">Правки</button>
-    <button class="btn btn--ghost" id="setup-open" type="button" hidden>Настройки</button>
+    <button class="btn btn--ghost btn--lang" id="lang-toggle" type="button" title="Switch language">EN</button>
+    <button class="btn btn--ghost" id="admin-toggle" type="button">Sign in</button>
+    <button class="btn btn--ghost" id="setup-open" type="button" data-i18n="nav.settings" hidden>Settings</button>
   </div>
 </header>
 
 <!-- Панель управления днём. Видна только в режиме правок. -->
 <section class="bar" id="bar" hidden>
   <div class="bar__group">
-    <span class="bar__label">Кто на месте</span>
+    <span class="bar__label" data-i18n="bar.presence">Who is in</span>
     <div class="chips" id="presence"></div>
   </div>
 
   <div class="bar__group bar__group--grow">
-    <span class="bar__label">Объём на день</span>
+    <span class="bar__label" data-i18n="bar.volumes">Volume for the day</span>
     <div class="volumes" id="volumes"></div>
   </div>
 
   <div class="bar__group">
-    <span class="bar__label">План</span>
+    <span class="bar__label" data-i18n="bar.plan">Plan</span>
     <div class="bar__buttons">
-      <button class="btn btn--sm" id="jobs-open" type="button">Задание</button>
-      <button class="btn btn--sm btn--ghost" id="add-block" type="button">+ Задача</button>
-      <button class="btn btn--sm btn--ghost" id="rebuild" type="button">Собрать заново</button>
+      <button class="btn btn--sm" id="jobs-open" type="button" data-i18n="bar.jobs">Job list</button>
+      <button class="btn btn--sm btn--ghost" id="add-block" type="button" data-i18n="bar.addTask">+ Task</button>
+      <button class="btn btn--sm btn--ghost" id="rebuild" type="button" data-i18n="bar.rebuild">Rebuild</button>
     </div>
   </div>
 </section>
@@ -65,14 +66,14 @@
 <!-- ───────── ввод PIN ───────── -->
 <div class="modal" id="pin-modal" hidden>
   <div class="modal__box modal__box--narrow">
-    <h2>Код доступа</h2>
-    <p class="muted" id="pin-hint">Введите код, чтобы менять план.</p>
+    <h2 data-i18n="pin.title">Access code</h2>
+    <p class="muted" id="pin-hint">Enter your code.</p>
     <input class="pin-input" id="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="••••">
     <div class="keypad" id="keypad"></div>
     <p class="err" id="pin-err"></p>
     <div class="modal__act">
-      <button class="btn btn--ghost" data-close="pin-modal" type="button">Отмена</button>
-      <button class="btn" id="pin-submit" type="button">Войти</button>
+      <button class="btn btn--ghost" data-close="pin-modal" type="button" data-i18n="pin.cancel">Cancel</button>
+      <button class="btn" id="pin-submit" type="button" data-i18n="pin.submit">Sign in</button>
     </div>
   </div>
 </div>
@@ -80,20 +81,20 @@
 <!-- ───────── карточка задачи ───────── -->
 <div class="modal" id="block-modal" hidden>
   <div class="modal__box">
-    <h2 id="block-title">Задача</h2>
+    <h2 id="block-title">Task</h2>
 
     <label class="field">
-      <span>Кто делает</span>
+      <span data-i18n="block.who">Who does it</span>
       <select id="block-staff"></select>
     </label>
 
     <label class="field">
-      <span>Что делает</span>
+      <span data-i18n="block.what">What they do</span>
       <select id="block-task"></select>
     </label>
 
     <div class="field">
-      <span>Товар</span>
+      <span data-i18n="block.product">Product</span>
       <div class="row">
         <select id="block-product"></select>
         <select id="block-pack"></select>
@@ -101,56 +102,56 @@
     </div>
 
     <label class="field" id="field-variant">
-      <span>Цвет / вкус</span>
+      <span data-i18n="block.variant">Colour / flavour</span>
       <select id="block-variant"></select>
     </label>
 
     <div class="field">
-      <span>Как считаем время</span>
+      <span data-i18n="block.timeMode">How time is counted</span>
       <div class="seg" id="block-mode">
-        <button type="button" data-mode="time">По времени</button>
-        <button type="button" data-mode="volume">По количеству</button>
+        <button type="button" data-mode="time" data-i18n="block.byTime">By time</button>
+        <button type="button" data-mode="volume" data-i18n="block.byVolume">By quantity</button>
       </div>
       <p class="muted" id="mode-hint"></p>
     </div>
 
     <label class="field" id="field-duration">
-      <span>Сколько времени</span>
+      <span data-i18n="block.duration">How long</span>
       <div class="row">
         <input id="block-duration" type="number" min="0" step="5" inputmode="numeric">
-        <span class="unit">мин</span>
+        <span class="unit" data-i18n="unit.min">min</span>
       </div>
     </label>
 
     <label class="field" id="field-qty">
-      <span>Количество</span>
+      <span data-i18n="block.qty">Quantity</span>
       <div class="row">
         <input id="block-qty" type="number" min="0" step="1" inputmode="numeric">
-        <span class="unit" id="qty-unit">шт</span>
+        <span class="unit" id="qty-unit">pcs</span>
       </div>
       <p class="muted" id="qty-calc"></p>
     </label>
 
     <label class="field">
-      <span>Куда уходит</span>
+      <span data-i18n="block.dest">Where it goes</span>
       <select id="block-dest"></select>
     </label>
 
     <label class="field">
-      <span>Начать не раньше <i class="muted">(необязательно)</i></span>
+      <span><span data-i18n="block.notBefore">Not before</span> <i class="muted" data-i18n="block.optional">(optional)</i></span>
       <input id="block-pinned" type="time" step="300">
     </label>
 
     <label class="field">
-      <span>Заметка</span>
-      <input id="block-note" type="text" maxlength="120" placeholder="Например: сначала клубника">
+      <span data-i18n="block.note">Note</span>
+      <input id="block-note" type="text" maxlength="120" data-i18n-placeholder="block.notePlaceholder" placeholder="e.g. strawberry first">
     </label>
 
     <div class="modal__act">
-      <button class="btn btn--danger" id="block-delete" type="button">Удалить</button>
+      <button class="btn btn--danger" id="block-delete" type="button" data-i18n="block.delete">Delete</button>
       <span class="spacer"></span>
-      <button class="btn btn--ghost" data-close="block-modal" type="button">Отмена</button>
-      <button class="btn" id="block-save" type="button">Сохранить</button>
+      <button class="btn btn--ghost" data-close="block-modal" type="button" data-i18n="block.cancel">Cancel</button>
+      <button class="btn" id="block-save" type="button" data-i18n="block.save">Save</button>
     </div>
   </div>
 </div>
@@ -158,27 +159,27 @@
 <!-- ───────── задание на день ───────── -->
 <div class="modal" id="jobs-modal" hidden>
   <div class="modal__box modal__box--wide">
-    <h2 id="jobs-title">Задание на день</h2>
-    <p class="muted">
-      Что нужно сделать — без привязки к людям. Кнопка «Распределить» раскидает это
-      по смене: важное вперёд, работу делит между людьми, дольше трёх часов подряд
-      на переборке никого не сажает.
+    <h2 id="jobs-title" data-i18n="jobs.title">Job list for the day</h2>
+    <p class="muted" data-i18n="jobs.intro">
+      What needs doing — with no people attached yet. «Assign to people» spreads it
+      across the shift: important first, splits work between people, and never sits
+      anyone on sorting for more than three hours straight.
     </p>
 
     <div id="jobs-list"></div>
 
     <div class="jobs__act">
-      <button class="btn btn--sm btn--ghost" id="job-add" type="button">+ Строка</button>
-      <button class="btn btn--sm btn--ghost" id="jobs-tomorrow" type="button">Взять из завтрашнего</button>
+      <button class="btn btn--sm btn--ghost" id="job-add" type="button" data-i18n="jobs.addRow">+ Row</button>
+      <button class="btn btn--sm btn--ghost" id="jobs-tomorrow" type="button" data-i18n="jobs.fromTomorrow">Take from tomorrow</button>
       <span class="spacer"></span>
       <span class="muted" id="jobs-summary"></span>
     </div>
 
     <div class="modal__act">
-      <button class="btn btn--ghost" data-close="jobs-modal" type="button">Закрыть</button>
+      <button class="btn btn--ghost" data-close="jobs-modal" type="button" data-i18n="jobs.close">Close</button>
       <span class="spacer"></span>
-      <button class="btn btn--ghost" id="jobs-copy" type="button">Записать на завтра</button>
-      <button class="btn" id="jobs-apply" type="button">Распределить по людям</button>
+      <button class="btn btn--ghost" id="jobs-copy" type="button" data-i18n="jobs.copyTomorrow">Save for tomorrow</button>
+      <button class="btn" id="jobs-apply" type="button" data-i18n="jobs.apply">Assign to people</button>
     </div>
   </div>
 </div>
@@ -187,12 +188,12 @@
 <div class="modal" id="setup-modal" hidden>
   <div class="modal__box modal__box--wide">
     <div class="tabs" id="setup-tabs">
-      <button type="button" class="is-on" data-tab="templates">Шаблоны недели</button>
-      <button type="button" data-tab="norms">Нормы времени</button>
-      <button type="button" data-tab="tasks">Задачи</button>
-      <button type="button" data-tab="staff">Сотрудники</button>
-      <button type="button" data-tab="shift">Смена</button>
-      <button type="button" data-tab="log">Журнал</button>
+      <button type="button" class="is-on" data-tab="templates" data-i18n="setup.templates">Week templates</button>
+      <button type="button" data-tab="norms" data-i18n="setup.norms">Time norms</button>
+      <button type="button" data-tab="tasks" data-i18n="setup.tasks">Tasks</button>
+      <button type="button" data-tab="staff" data-i18n="setup.staff">People</button>
+      <button type="button" data-tab="shift" data-i18n="setup.shift">Shift</button>
+      <button type="button" data-tab="log" data-i18n="setup.log">History</button>
     </div>
 
     <div class="tab" id="tab-templates"></div>
@@ -203,14 +204,15 @@
     <div class="tab" id="tab-log" hidden></div>
 
     <div class="modal__act">
-      <button class="btn btn--ghost" id="logout" type="button">Выйти из правок</button>
+      <button class="btn btn--ghost" id="logout" type="button" data-i18n="nav.signOut">Sign out</button>
       <span class="spacer"></span>
-      <button class="btn btn--ghost" data-close="setup-modal" type="button">Закрыть</button>
-      <button class="btn" id="setup-save" type="button">Сохранить настройки</button>
+      <button class="btn btn--ghost" data-close="setup-modal" type="button" data-i18n="setup.close">Close</button>
+      <button class="btn" id="setup-save" type="button" data-i18n="setup.save">Save settings</button>
     </div>
   </div>
 </div>
 
+<script src="i18n.js"></script>
 <script src="plan.js"></script>
 <script src="store.js"></script>
 <script src="app.js"></script>
