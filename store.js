@@ -15,21 +15,35 @@
 
   var LS_CONFIG = 'wh.config';
   var LS_DAY = 'wh.day.';
-  var LS_ADMIN = 'wh.admin.until';
+  var LS_SESSION = 'wh.session';
 
-  /* Локальный код — не защита, а замок от случайного касания: он лежит
-     в тех же настройках, которые открывает. В режиме 'api' проверка
-     идёт на сервере, и этот код не используется вовсе. */
-  var DEFAULT_LOCAL_PIN = '1234';
+  var RANK = { tablet: 1, manager: 2, admin: 3 };
+
+  /* Локальные коды — не защита, а замок от случайного касания: они лежат
+     в тех же настройках, которые открывают. В режиме 'api' проверка идёт
+     на сервере, и эти коды не используются вовсе. */
+  var DEFAULT_LOCAL_PINS = { tablet: '1111', manager: '2222', admin: '3333' };
 
   var state = {
     mode: null,
-    admin: false,
+    role: '',            // '' | 'tablet' | 'manager' | 'admin'
+    admin: false,        // может править план: manager или admin
+    roles: [],           // какие роли вообще настроены на сервере
     pinSet: false,
     configVersion: 0,
     dayVersion: 0,
     lastError: ''
   };
+
+  /* Единственное место, где решается «хватает ли прав». */
+  function can(needed) {
+    return Boolean(state.role) && RANK[state.role] >= RANK[needed];
+  }
+
+  function setRole(role) {
+    state.role = role || '';
+    state.admin = can('manager');
+  }
 
   function api(path, options) {
     return fetch(path, Object.assign({
@@ -75,7 +89,8 @@
           }
         }
         state.mode = 'api';
-        state.admin = Boolean(data.admin);
+        setRole(data.role);
+        state.roles = data.roles || [];
         state.pinSet = Boolean(data.pinSet);
         state.configVersion = data.configVersion || 0;
         state.dayVersion = data.dayVersion || 0;
@@ -89,8 +104,20 @@
       });
   }
 
+  function localPins(config) {
+    var access = (config && config.access) || {};
+    var p = access.pins || {};
+    return {
+      tablet:  String(p.tablet  || DEFAULT_LOCAL_PINS.tablet),
+      manager: String(p.manager || DEFAULT_LOCAL_PINS.manager),
+      admin:   String(p.admin   || DEFAULT_LOCAL_PINS.admin)
+    };
+  }
+
   function loadLocal(date) {
-    state.admin = Number(lsGet(LS_ADMIN, 0)) > Date.now();
+    var session = lsGet(LS_SESSION, null);
+    setRole(session && Number(session.until) > Date.now() ? session.role : '');
+    state.roles = ['tablet', 'manager', 'admin'];
     state.pinSet = true;
     return { config: lsGet(LS_CONFIG, null), day: lsGet(LS_DAY + date, null) };
   }
@@ -116,6 +143,7 @@
 
   function saveDayAt(day, reason) {
     if (state.mode === 'local') {
+      if (!can('manager')) return Promise.resolve({ error: 'forbidden' });
       return Promise.resolve(lsSet(LS_DAY + day.date, day) ? { ok: true } : { error: 'local write failed' });
     }
     return api('/api/day?date=' + encodeURIComponent(day.date), {
@@ -129,6 +157,7 @@
 
   function saveConfig(config) {
     if (state.mode === 'local') {
+      if (!can('manager')) return Promise.resolve({ error: 'forbidden' });
       return Promise.resolve(lsSet(LS_CONFIG, config) ? { ok: true } : { error: 'local write failed' });
     }
     return api('/api/config', {
@@ -142,6 +171,7 @@
 
   function saveDay(day, reason) {
     if (state.mode === 'local') {
+      if (!can('manager')) return Promise.resolve({ error: 'forbidden' });
       return Promise.resolve(lsSet(LS_DAY + day.date, day) ? { ok: true } : { error: 'local write failed' });
     }
     return api('/api/day?date=' + encodeURIComponent(day.date), {
@@ -153,9 +183,10 @@
     });
   }
 
-  /* Отметка «начал / готово» — доступна и без прав администратора. */
+  /* Отметка «начал / готово» — самой слабой роли достаточно. */
   function progress(date, blockId, status, doneQty) {
     if (state.mode === 'local') {
+      if (!can('tablet')) return Promise.resolve({ error: 'forbidden' });
       var day = lsGet(LS_DAY + date, null);
       if (!day || !day.blocks) return Promise.resolve({ error: 'no day' });
       var b = day.blocks.filter(function (x) { return x.id === blockId; })[0];
@@ -176,25 +207,32 @@
 
   function login(pin) {
     if (state.mode === 'local') {
-      var config = lsGet(LS_CONFIG, null);
-      var expected = (config && config.localPin) || DEFAULT_LOCAL_PIN;
-      if (String(pin) !== String(expected)) return Promise.resolve({ error: 'wrong pin' });
-      lsSet(LS_ADMIN, Date.now() + 12 * 3600e3);
-      state.admin = true;
-      return Promise.resolve({ ok: true });
+      var expected = localPins(lsGet(LS_CONFIG, null));
+      var role = '';
+      /* Тот же порядок, что на сервере: при совпадении кодов побеждает
+         меньшее право. */
+      ['tablet', 'manager', 'admin'].forEach(function (r) {
+        if (!role && String(pin) === expected[r]) role = r;
+      });
+      if (!role) return Promise.resolve({ error: 'wrong pin' });
+
+      var hours = role === 'tablet' ? 24 * 30 : 12;
+      lsSet(LS_SESSION, { role: role, until: Date.now() + hours * 3600e3 });
+      setRole(role);
+      return Promise.resolve({ ok: true, role: role });
     }
     return api('/api/login', { method: 'POST', body: JSON.stringify({ pin: pin }) })
       .then(readResult)
       .then(function (r) {
-        if (r.ok) state.admin = true;
+        if (r.ok) setRole(r.role);
         return r;
       });
   }
 
   function logout() {
-    state.admin = false;
+    setRole('');
     if (state.mode === 'local') {
-      lsSet(LS_ADMIN, 0);
+      lsSet(LS_SESSION, null);
       return Promise.resolve({ ok: true });
     }
     return api('/api/logout', { method: 'POST' }).then(readResult);
@@ -217,6 +255,7 @@
 
   root.WHStore = {
     state: state,
+    can: can,
     load: load,
     saveConfig: saveConfig,
     saveDay: saveDay,
@@ -226,6 +265,7 @@
     login: login,
     logout: logout,
     history: history,
-    DEFAULT_LOCAL_PIN: DEFAULT_LOCAL_PIN
+    localPins: localPins,
+    DEFAULT_LOCAL_PINS: DEFAULT_LOCAL_PINS
   };
 })(window);

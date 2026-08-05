@@ -20,7 +20,8 @@
     config: null,
     day: null,
     view: null,
-    admin: false,
+    role: '',           // '' | 'tablet' | 'manager' | 'admin'
+    admin: false,       // может править план: manager или admin
     dirty: false,
     saving: false,
     editingBlockId: null,
@@ -65,19 +66,34 @@
     });
   }
 
+  /* Как роль называется на экране. Ключи те же, что у сервера. */
+  var ROLE_TITLES = {
+    tablet:  'Склад',
+    manager: 'Менеджер',
+    admin:   'Администратор'
+  };
+
+  /* Права живут в store, здесь только их копия для отрисовки. */
+  function syncRole() {
+    app.role = S.state.role;
+    app.admin = S.state.admin;
+  }
+
   function load() {
     setSync('загрузка…');
     return S.load(app.date).then(function (data) {
       app.config = data.config || P.defaultConfig();
-      app.admin = S.state.admin;
+      syncRole();
 
       if (data.day) {
         app.day = data.day;
       } else {
         /* Дня ещё нет — разворачиваем шаблон нужного дня недели и
-           сразу сохраняем, чтобы отметки «готово» было куда писать. */
+           сразу сохраняем, чтобы отметки «готово» было куда писать.
+           Гость день не создаёт: сервер ему это запретит, и незачем
+           показывать ошибку тому, кто просто смотрит с телефона. */
         app.day = P.materialize(app.config, P.emptyDay(app.date));
-        scheduleSave('день создан из шаблона', true);
+        if (S.can('tablet')) scheduleSave('день создан из шаблона', true);
       }
 
       recompute();
@@ -102,7 +118,7 @@
       if (app.dirty || anyModalOpen()) return;
       if (data.config) app.config = data.config;
       if (data.day) app.day = data.day;
-      app.admin = S.state.admin;
+      syncRole();
       recompute();
       render();
     }).catch(function () { /* пропавшая сеть не должна ломать экран */ });
@@ -189,7 +205,13 @@
     stats.appendChild(stat(P.human(t.freeMin), 'свободно'));
     stats.appendChild(stat(t.done + ' / ' + t.blocks, 'сделано'));
 
-    $('admin-toggle').textContent = app.admin ? 'Готово' : 'Правки';
+    /* Кнопка показывает, кем сейчас вошли: на складе у планшета и у
+       менеджера один и тот же экран, и перепутать роль легко. */
+    var toggle = $('admin-toggle');
+    toggle.textContent = app.role ? ROLE_TITLES[app.role] : 'Войти';
+    toggle.title = app.role ? 'Выйти' : 'Войти по коду';
+    toggle.className = 'btn btn--ghost' + (app.role ? ' btn--role is-' + app.role : '');
+
     $('setup-open').hidden = !app.admin;
   }
 
@@ -367,8 +389,13 @@
 
     var act = el('div', 'task__act');
 
+    /* Гость смотрит план, но не отмечает: иначе с любого телефона,
+       открывшего адрес, можно закрыть чужую задачу. */
+    var mayMark = S.can('tablet');
+
     var start = el('button', b.status === 'active' ? 'is-active' : '', 'Начал');
     start.type = 'button';
+    start.disabled = !mayMark;
     start.addEventListener('click', function () {
       setStatus(b, b.status === 'active' ? 'planned' : 'active');
     });
@@ -376,6 +403,7 @@
 
     var done = el('button', b.status === 'done' ? 'is-on' : '', b.status === 'done' ? 'Сделано' : 'Готово');
     done.type = 'button';
+    done.disabled = !mayMark;
     done.addEventListener('click', function () {
       setStatus(b, b.status === 'done' ? 'planned' : 'done');
     });
@@ -438,6 +466,10 @@
      ============================================================ */
 
   function setStatus(block, status) {
+    if (!S.can('tablet')) {
+      setSync('чтобы отмечать выполнение, войдите по коду склада', true);
+      return;
+    }
     /* Оптимистично: кнопка должна отзываться мгновенно, иначе на
        планшете её нажмут второй раз. */
     block.status = status;
@@ -1264,18 +1296,53 @@
     };
     box.appendChild(add);
 
-    if (S.state.mode === 'local') {
-      box.appendChild(el('h2', null, 'Код доступа'));
+    renderAccessSection(box);
+  }
+
+  /*
+   * Раздел «Доступ». Правит его только администратор — на сервере это
+   * тоже проверяется, здесь просто не показываем менеджеру то, чего он
+   * всё равно не сохранит.
+   */
+  function renderAccessSection(box) {
+    if (app.role !== 'admin') return;
+
+    box.appendChild(el('h2', null, 'Доступ'));
+
+    if (S.state.mode !== 'local') {
       box.appendChild(el('p', 'muted',
-        'В локальном режиме код хранится на этом же устройстве и защищает только от случайного касания. Общий план с настоящей проверкой кода появляется после подключения сервера — см. README.'));
-      var pin = document.createElement('input');
-      pin.value = app.draftConfig.localPin || S.DEFAULT_LOCAL_PIN;
-      pin.onchange = function () { app.draftConfig.localPin = pin.value.trim(); };
-      var wrap = el('label', 'field');
-      wrap.appendChild(el('span', null, 'Локальный код'));
-      wrap.appendChild(pin);
-      box.appendChild(wrap);
+        'Коды хранятся в секретах Cloudflare, не в настройках и не в репозитории. ' +
+        'Сменить код: npx wrangler secret put WH_PIN_TABLET (или _MANAGER, или _ADMIN).'));
+      var have = S.state.roles || [];
+      ['tablet', 'manager', 'admin'].forEach(function (r) {
+        var on = have.indexOf(r) >= 0;
+        box.appendChild(el('p', 'muted',
+          (on ? '● ' : '○ ') + ROLE_TITLES[r] + ' — ' + (on ? 'код задан' : 'код не задан, вход закрыт')));
+      });
+      return;
     }
+
+    box.appendChild(el('p', 'muted',
+      'В локальном режиме коды лежат на этом же устройстве и защищают только от случайного касания. ' +
+      'Настоящая проверка появляется после подключения сервера — см. README.'));
+
+    app.draftConfig.access = app.draftConfig.access || {};
+    var pins = S.localPins(app.draftConfig);
+    app.draftConfig.access.pins = pins;
+
+    [['tablet', 'Склад (планшет)'], ['manager', 'Менеджер'], ['admin', 'Администратор']]
+      .forEach(function (pair) {
+        var input = document.createElement('input');
+        input.value = pins[pair[0]];
+        input.inputMode = 'numeric';
+        input.onchange = function () {
+          app.draftConfig.access.pins[pair[0]] = input.value.trim();
+        };
+        var wrap = el('label', 'field');
+        wrap.appendChild(el('span', null, pair[1]));
+        wrap.appendChild(input);
+        box.appendChild(wrap);
+      });
   }
 
   function timeField(label, value, onChange) {
@@ -1306,7 +1373,7 @@
         var t = el('time', null, new Date(it.at).toLocaleString('ru-RU'));
         row.appendChild(t);
         row.appendChild(el('span', null,
-          (it.actor === 'admin' ? 'правки' : 'планшет') + ' · ' + (it.detail || it.action) +
+          (ROLE_TITLES[it.actor] || it.actor) + ' · ' + (it.detail || it.action) +
           (it.target ? ' (' + it.target + ')' : '')));
         box.appendChild(row);
       });
@@ -1335,12 +1402,20 @@
      Вход
      ============================================================ */
 
+  /*
+   * Кем входить, выбирает сам код — отдельного поля «войти как» нет.
+   * Сотрудник у планшета не должен думать, какую роль он выбирает, а
+   * подсказывать список ролей на экране входа значило бы подсказывать
+   * и то, что подбирать.
+   */
   function askPin() {
     $('pin-input').value = '';
     $('pin-err').textContent = '';
     $('pin-hint').textContent = S.state.mode === 'local'
-      ? 'Локальный код по умолчанию: ' + S.DEFAULT_LOCAL_PIN
-      : 'Введите код, чтобы менять план.';
+      ? 'Локальные коды по умолчанию: склад ' + S.DEFAULT_LOCAL_PINS.tablet +
+        ', менеджер ' + S.DEFAULT_LOCAL_PINS.manager +
+        ', администратор ' + S.DEFAULT_LOCAL_PINS.admin
+      : 'Введите свой код. Права определятся сами.';
     openModal('pin-modal');
     setTimeout(function () { $('pin-input').focus(); }, 50);
   }
@@ -1351,9 +1426,12 @@
     $('pin-err').textContent = '';
     S.login(pin).then(function (r) {
       if (r && r.ok) {
-        app.admin = true;
+        syncRole();
         closeModal('pin-modal');
-        render();
+        setSync('вход: ' + (ROLE_TITLES[app.role] || app.role));
+        /* Роль сменилась — то, что было закрыто, могло открыться:
+           перечитываем день, чтобы не гадать по старому снимку. */
+        load();
         return;
       }
       $('pin-err').textContent = r && r.hint ? r.hint : 'Неверный код';
@@ -1371,8 +1449,8 @@
     $('today').onclick = function () { goDate(P.todayISO()); };
 
     $('admin-toggle').onclick = function () {
-      if (app.admin) {
-        S.logout().then(function () { app.admin = false; render(); });
+      if (app.role) {
+        S.logout().then(function () { syncRole(); render(); });
       } else {
         askPin();
       }
@@ -1424,7 +1502,7 @@
     $('setup-save').onclick = saveSetup;
     $('logout').onclick = function () {
       S.logout().then(function () {
-        app.admin = false;
+        syncRole();
         closeModal('setup-modal');
         render();
       });

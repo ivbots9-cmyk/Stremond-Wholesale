@@ -102,6 +102,24 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 .btn--danger { background: var(--err); }
 .bar .btn--ghost, .modal .btn--ghost { background: #e2e8f0; color: var(--ink); }
 
+/* Кем вошли. Роль видно с другого конца склада — перепутать планшет
+   с менеджерским входом дороже, чем строчка цвета. */
+.btn--role { position: relative; padding-left: 30px; }
+.btn--role::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.btn--role.is-tablet::before { background: #38bdf8; }
+.btn--role.is-manager::before { background: #fbbf24; }
+.btn--role.is-admin::before { background: #f87171; }
+
 /* ───────── панель дня ───────── */
 
 .bar {
@@ -271,6 +289,8 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 }
 .task__act button.is-on { background: var(--ok); border-color: var(--ok); color: #fff; }
 .task__act button.is-active { background: #2563eb; border-color: #2563eb; color: #fff; }
+/* Гость план видит, но не отмечает. */
+.task__act button:disabled { opacity: .4; cursor: default; }
 .task__act .edit { flex: 0 0 52px; font-weight: 400; }
 
 /* ───────── подвал ───────── */
