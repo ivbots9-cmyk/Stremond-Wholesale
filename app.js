@@ -49,7 +49,9 @@
     dirty: false,
     saving: false,
     editingBlockId: null,
-    draftConfig: null   // копия настроек, пока открыто окно настроек
+    draftConfig: null,  // копия настроек, пока открыто окно настроек
+    whoStaff: null,     // чья карточка открыта в окне смены
+    hoursWeek: null     // понедельник недели, показанной в табеле
   };
 
   var saveTimer = null;
@@ -75,7 +77,7 @@
   function openModal(id) { $(id).hidden = false; }
   function closeModal(id) { $(id).hidden = true; }
   function anyModalOpen() {
-    return ['pin-modal', 'block-modal', 'setup-modal', 'jobs-modal'].some(function (id) { return !$(id).hidden; });
+    return ['pin-modal', 'block-modal', 'setup-modal', 'jobs-modal', 'who-modal'].some(function (id) { return !$(id).hidden; });
   }
 
   /* ============================================================
@@ -266,7 +268,10 @@
       card.disabled = !may || locked;
       if (locked) card.classList.add('is-off');
 
-      card.onclick = function () { toggleClock(s, st); };
+      card.onclick = function () {
+        if (!S.can('tablet')) { setSync(T.t('clock.signInFirst'), true); return; }
+        openWho(s, st);
+      };
       box.appendChild(card);
     });
 
@@ -280,6 +285,13 @@
     if (st === 'noshow') return T.t('clock.noshow');
     if (st === 'expected') return T.t('clock.expected', { time: P.fmt(P.hhmm(shiftStartOf(staff))) });
     if (st === 'in') return T.t('clock.in', { time: hhmmOf(rec.in) });
+    if (st === 'break') {
+      var open = P.openBreak(rec);
+      return T.t('who.onBreakSince', {
+        time: hhmmOf(open && open.start),
+        mins: P.human(P.breakMinutes(app.day, staff.id, new Date().toISOString()))
+      });
+    }
     if (st === 'out') {
       var worked = P.workedMinutes(app.day, staff.id);
       return T.t('clock.out', {
@@ -318,6 +330,61 @@
         if (app.dirty && !app.saving) scheduleSave('day created from template', true);
         setTimeout(wait, 100);
       })();
+    });
+  }
+
+  /*
+   * Окно сотрудника. Раньше карточка переключала состояние сразу, но с
+   * появлением перерыва действий стало три — и угадывать, что сделает
+   * нажатие, стало нельзя. Теперь карточка открывает окно, где написано
+   * прямым текстом, что произойдёт.
+   */
+  function openWho(staff, st) {
+    app.whoStaff = staff.id;
+    var rec = (app.day.attendance || {})[staff.id] || {};
+
+    $('who-name').textContent = staff.name;
+    $('who-state').textContent = clockState(staff, st, rec);
+
+    var box = $('who-actions');
+    box.innerHTML = '';
+
+    function act(cls, labelKey, action) {
+      var b = el('button', cls, T.t(labelKey));
+      b.type = 'button';
+      b.onclick = function () { closeModal('who-modal'); sendClock(staff, action); };
+      box.appendChild(b);
+    }
+
+    if (st === 'in') {
+      act('is-break', 'who.goBreak', 'break-start');
+      act('is-out', 'who.clockOut', 'out');
+    } else if (st === 'break') {
+      act('', 'who.endBreak', 'break-end');
+      act('is-out', 'who.clockOut', 'out');
+    } else if (st === 'expected' || st === 'noshow') {
+      act('', 'who.checkIn', 'in');
+    }
+    /* Смена закрыта — открывать нечего: день человека уже посчитан. */
+
+    openModal('who-modal');
+  }
+
+  function sendClock(staff, action) {
+    /* Закрытие смены подтверждаем: случайное нажатие стоит человеку
+       часов в табеле. Перерыв и приход откатываются сами, их не спрашиваем. */
+    if (action === 'out' && !confirm(T.t('clock.confirmOut', { name: staff.name }))) return;
+
+    flushSave().then(function () {
+      return S.attendance(app.date, staff.id, action);
+    }).then(function (r) {
+      if (r && r.error) {
+        setSync(T.t('clock.failed', { error: r.error }), true);
+        return;
+      }
+      return load();
+    }).catch(function (e) {
+      setSync(T.t('clock.failed', { error: e.message || e }), true);
     });
   }
 
@@ -1037,7 +1104,7 @@
     Array.prototype.forEach.call($('setup-tabs').children, function (b) {
       b.classList.toggle('is-on', b.getAttribute('data-tab') === name);
     });
-    ['templates', 'norms', 'tasks', 'staff', 'shift', 'log'].forEach(function (t) {
+    ['templates', 'norms', 'tasks', 'staff', 'shift', 'hours', 'log'].forEach(function (t) {
       $('tab-' + t).hidden = t !== name;
     });
     if (name === 'templates') renderTemplatesTab();
@@ -1045,6 +1112,7 @@
     if (name === 'tasks') renderTasksTab();
     if (name === 'staff') renderStaffTab();
     if (name === 'shift') renderShiftTab();
+    if (name === 'hours') renderHoursTab();
     if (name === 'log') renderLogTab();
   }
 
@@ -1518,6 +1586,153 @@
     return wrap;
   }
 
+  /*
+   * Табель за неделю. Данные лежат по дням, поэтому неделя — это семь
+   * чтений; для четырёх человек это дешевле, чем заводить отдельный
+   * серверный запрос с выборкой по диапазону.
+   */
+  function renderHoursTab() {
+    var box = $('tab-hours');
+    box.innerHTML = '';
+    app.hoursWeek = app.hoursWeek || P.weekStart(P.todayISO());
+
+    box.appendChild(el('p', 'muted', T.t('hours.intro')));
+
+    var nav = el('div', 'hours__week');
+    var prev = el('button', 'btn btn--sm btn--ghost', '‹');
+    prev.type = 'button';
+    prev.title = T.t('hours.prev');
+    prev.onclick = function () { app.hoursWeek = P.shiftISO(app.hoursWeek, -7); renderHoursTab(); };
+
+    var next = el('button', 'btn btn--sm btn--ghost', '›');
+    next.type = 'button';
+    next.title = T.t('hours.next');
+    next.onclick = function () { app.hoursWeek = P.shiftISO(app.hoursWeek, 7); renderHoursTab(); };
+
+    var now = el('button', 'btn btn--sm btn--ghost', T.t('hours.thisWeek'));
+    now.type = 'button';
+    now.onclick = function () { app.hoursWeek = P.weekStart(P.todayISO()); renderHoursTab(); };
+
+    nav.appendChild(prev);
+    nav.appendChild(el('span', 'hours__total', T.t('hours.week', { date: P.humanDate(app.hoursWeek) })));
+    nav.appendChild(next);
+    nav.appendChild(now);
+    box.appendChild(nav);
+
+    var body = el('div');
+    body.appendChild(el('p', 'muted', T.t('sync.loading')));
+    box.appendChild(body);
+
+    var dates = [];
+    for (var i = 0; i < 7; i++) dates.push(P.shiftISO(app.hoursWeek, i));
+
+    Promise.all(dates.map(function (d) {
+      /* Сегодняшний день уже в памяти — лишний запрос за ним не нужен. */
+      if (d === app.date && app.day) return Promise.resolve(app.day);
+      return S.loadDay(d);
+    })).then(function (days) {
+      renderHoursTable(body, days.filter(Boolean));
+    }).catch(function (e) {
+      body.innerHTML = '';
+      body.appendChild(el('p', 'err', String(e.message || e)));
+    });
+  }
+
+  function renderHoursTable(body, days) {
+    body.innerHTML = '';
+    var rows = P.timesheet(app.config, days, new Date().toISOString());
+    var withData = rows.filter(function (r) { return r.days.length; });
+
+    if (!withData.length) {
+      body.appendChild(el('p', 'muted', T.t('hours.empty')));
+      return;
+    }
+
+    var grid = el('div', 'grid grid--hours');
+    [T.t('hours.person'), T.t('hours.days'), T.t('hours.breaks'),
+      T.t('hours.worked'), T.t('hours.rate'), T.t('hours.pay')].forEach(function (h) {
+      grid.appendChild(el('div', 'grid__head', h));
+    });
+
+    var totalMin = 0;
+    var totalPay = 0;
+
+    withData.forEach(function (r) {
+      totalMin += r.workedMin;
+      totalPay += r.pay;
+
+      var name = el('div', null, r.staff.name);
+      grid.appendChild(name);
+      grid.appendChild(el('div', null, String(r.closedDays)));
+      grid.appendChild(el('div', null, r.breakMin ? P.human(r.breakMin) : '—'));
+
+      var worked = el('div', null, P.human(r.workedMin));
+      if (r.openMin) {
+        worked.appendChild(el('span', 'hours__open', ' ' + T.t('hours.running', { time: P.human(r.openMin) })));
+      }
+      grid.appendChild(worked);
+
+      /* Ставку правит прямо здесь — иначе за ней пришлось бы идти на
+         другую вкладку и возвращаться. */
+      var rateCell = el('div');
+      var rate = document.createElement('input');
+      rate.type = 'number';
+      rate.min = '0';
+      rate.step = '0.25';
+      rate.value = r.rate || '';
+      rate.placeholder = '0';
+      rate.disabled = app.role !== 'admin';
+      rate.onchange = function () {
+        var s = (app.draftConfig.staff || []).filter(function (x) { return x.id === r.staff.id; })[0];
+        if (!s) return;
+        s.rate = Number(rate.value) || 0;
+        /* Ставка — часть настроек, сохраняется общей кнопкой «Сохранить». */
+        setSync(T.t('sync.unsaved'));
+      };
+      rateCell.appendChild(rate);
+      grid.appendChild(rateCell);
+
+      grid.appendChild(el('div', null, r.rate ? money(r.pay) : T.t('hours.noRate')));
+    });
+
+    grid.appendChild(el('div', 'hours__row--sum', T.t('hours.total')));
+    grid.appendChild(el('div', 'hours__row--sum', ''));
+    grid.appendChild(el('div', 'hours__row--sum', ''));
+    grid.appendChild(el('div', 'hours__row--sum', P.human(totalMin)));
+    grid.appendChild(el('div', 'hours__row--sum', ''));
+    grid.appendChild(el('div', 'hours__row--sum', money(totalPay)));
+
+    body.appendChild(grid);
+
+    var copy = el('button', 'btn btn--sm btn--ghost', T.t('hours.copy'));
+    copy.type = 'button';
+    copy.style.marginTop = '12px';
+    copy.onclick = function () { copyTimesheet(withData); };
+    body.appendChild(copy);
+  }
+
+  function money(v) {
+    return '$' + (Math.round(v * 100) / 100).toFixed(2);
+  }
+
+  /*
+   * Выгрузка для бухгалтера. Обычный текст, разделённый табуляцией:
+   * вставляется в любую таблицу без возни с файлами и кодировками.
+   */
+  function copyTimesheet(rows) {
+    var lines = [[T.t('hours.person'), T.t('hours.worked'), T.t('hours.rate'), T.t('hours.pay')].join('\t')];
+    rows.forEach(function (r) {
+      lines.push([r.staff.name, r.hours, r.rate || '', r.rate ? r.pay : ''].join('\t'));
+    });
+    var text = lines.join('\n');
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setSync(T.t('hours.copied')); });
+    } else {
+      window.prompt(T.t('hours.copy'), text);
+    }
+  }
+
   function renderLogTab() {
     var box = $('tab-log');
     box.innerHTML = '';
@@ -1705,7 +1920,7 @@
 
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
-      ['pin-modal', 'block-modal', 'setup-modal', 'jobs-modal'].forEach(closeModal);
+      ['pin-modal', 'block-modal', 'setup-modal', 'jobs-modal', 'who-modal'].forEach(closeModal);
     });
 
     /* Планшет висит сутками: в полночь дата должна перещёлкнуться сама. */

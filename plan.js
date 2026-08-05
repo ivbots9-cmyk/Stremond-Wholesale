@@ -666,7 +666,7 @@
 
     var rec = (day.attendance || {})[staff.id];
     if (rec && rec.out) return 'out';
-    if (rec && rec.in) return 'in';
+    if (rec && rec.in) return openBreak(rec) ? 'break' : 'in';
 
     /* Без часов судить о неявке нельзя — считаем, что человека ждём. */
     if (nowMin == null) return 'expected';
@@ -680,9 +680,20 @@
    * не отметился после паузы, и тот, кто уже закрыл смену, из плана
    * выпадают — их задачи уходят остальным.
    */
+  /*
+   * Перерыв — это всё ещё рабочий день: человек вернётся, и работу с него
+   * снимать нельзя. Поэтому 'break' здесь наравне с 'in'.
+   */
   function isAvailable(staff, day, nowMin, config) {
     var st = attendanceOf(config, day, staff, nowMin);
-    return st === 'in' || st === 'expected';
+    return st === 'in' || st === 'break' || st === 'expected';
+  }
+
+  /* Незакрытый перерыв, если он есть. */
+  function openBreak(rec) {
+    var list = (rec && rec.breaks) || [];
+    var last = list[list.length - 1];
+    return last && !last.end ? last : null;
   }
 
   function availableStaff(config, day, nowMin) {
@@ -701,9 +712,26 @@
     day.attendance = day.attendance || {};
     var rec = day.attendance[staffId];
     if (rec && rec.in && !rec.out) return day;
-    day.attendance[staffId] = { in: (rec && rec.in) || iso, out: null };
+    day.attendance[staffId] = { in: (rec && rec.in) || iso, out: null, breaks: (rec && rec.breaks) || [] };
     /* Пришёл — значит уже не «отмечен отсутствующим». */
     day.absent = (day.absent || []).filter(function (id) { return id !== staffId; });
+    return day;
+  }
+
+  function breakStart(day, staffId, iso) {
+    var rec = (day.attendance || {})[staffId];
+    if (!rec || !rec.in || rec.out) return day;
+    if (openBreak(rec)) return day;          // уже на перерыве
+    rec.breaks = rec.breaks || [];
+    rec.breaks.push({ start: iso, end: null });
+    return day;
+  }
+
+  function breakEnd(day, staffId, iso) {
+    var rec = (day.attendance || {})[staffId];
+    var open = openBreak(rec);
+    if (!open) return day;
+    open.end = iso;
     return day;
   }
 
@@ -712,16 +740,119 @@
     var rec = day.attendance[staffId];
     if (!rec || !rec.in) return day;
     if (rec.out) return day;
+    /* Ушёл, не закрыв перерыв: перерыв заканчивается тем же моментом —
+       иначе он тянулся бы до бесконечности и съедал часы. */
+    var open = openBreak(rec);
+    if (open) open.end = iso;
     rec.out = iso;
     return day;
   }
 
-  /* Сколько человек отработал по отметкам. null — смена не закрыта. */
+  /*
+   * Табель за период. days — массив документов дня (какие есть; за какой
+   * день данных нет, тот просто не участвует).
+   *
+   * Деньги считаются от ставки сотрудника и только по закрытым сменам.
+   * Незакрытая смена в сумму не идёт: платить за день, который ещё не
+   * кончился, нельзя, а показать «столько уже набежало» — можно, для
+   * этого есть openMinutes.
+   *
+   * Это черновик для бухгалтера, а не расчётный лист: налоги, переработки
+   * и всё остальное — не наша забота, о чём сказано и на экране.
+   */
+  function timesheet(config, days, nowIso) {
+    var byStaff = {};
+    (config.staff || []).forEach(function (s) {
+      byStaff[s.id] = {
+        staff: s,
+        rate: Number(s.rate) || 0,
+        days: [],
+        workedMin: 0,
+        breakMin: 0,
+        openMin: 0,
+        closedDays: 0
+      };
+    });
+
+    (days || []).forEach(function (day) {
+      if (!day || !day.attendance) return;
+      Object.keys(day.attendance).forEach(function (staffId) {
+        var row = byStaff[staffId];
+        if (!row) return;                       // человека удалили из справочника
+        var rec = day.attendance[staffId];
+        if (!rec || !rec.in) return;
+
+        var worked = workedMinutes(day, staffId);
+        var brk = Math.round(breakMinutes(day, staffId, nowIso));
+
+        if (worked == null) {
+          /* Смена не закрыта — считаем «набежало на сейчас», отдельно. */
+          var running = nowIso ? Math.max(0, Math.round(minutesBetween(rec.in, nowIso) - brk)) : 0;
+          row.openMin += running;
+        } else {
+          row.workedMin += worked;
+          row.closedDays++;
+        }
+        row.breakMin += brk;
+        row.days.push({
+          date: day.date,
+          in: rec.in,
+          out: rec.out || null,
+          breakMin: brk,
+          workedMin: worked
+        });
+      });
+    });
+
+    return Object.keys(byStaff).map(function (id) {
+      var r = byStaff[id];
+      r.days.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+      r.hours = Math.round(r.workedMin / 60 * 100) / 100;
+      r.pay = Math.round(r.hours * r.rate * 100) / 100;
+      return r;
+    }).filter(function (r) {
+      return r.staff.status !== 'left' || r.days.length;
+    });
+  }
+
+  /* Понедельник недели, в которую попадает дата. */
+  function weekStart(iso) {
+    var p = String(iso).split('-');
+    var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+    var shift = (d.getDay() + 6) % 7;           // 0 = понедельник
+    d.setDate(d.getDate() - shift);
+    return todayISO(d);
+  }
+
+  function minutesBetween(a, b) {
+    var ms = new Date(b).getTime() - new Date(a).getTime();
+    return ms > 0 ? ms / 60000 : 0;
+  }
+
+  /* Сколько минут человек провёл на перерывах. Открытый перерыв считается
+     до указанного момента — иначе на экране он бы не рос. */
+  function breakMinutes(day, staffId, untilIso) {
+    var rec = (day.attendance || {})[staffId];
+    if (!rec) return 0;
+    return (rec.breaks || []).reduce(function (sum, br) {
+      var end = br.end || untilIso;
+      return end ? sum + minutesBetween(br.start, end) : sum;
+    }, 0);
+  }
+
+  /*
+   * Отработанное время: от прихода до ухода минус перерывы. Именно это
+   * число идёт в табель, поэтому перерывы вычитаются всегда — за них не
+   * платят.
+   *
+   * null означает «смена не закрыта», а не ноль: разница важна, чтобы в
+   * табеле не появлялись выдуманные нули за незакрытый день.
+   */
   function workedMinutes(day, staffId) {
     var rec = (day.attendance || {})[staffId];
     if (!rec || !rec.in || !rec.out) return null;
-    var ms = new Date(rec.out).getTime() - new Date(rec.in).getTime();
-    return ms > 0 ? Math.round(ms / 60000) : 0;
+    var gross = minutesBetween(rec.in, rec.out);
+    return Math.max(0, Math.round(gross - breakMinutes(day, staffId)));
   }
 
   /* Умеет ли человек эту задачу. Пустой список навыков = универсал:
@@ -1336,6 +1467,12 @@
     isAvailable: isAvailable,
     attendanceOf: attendanceOf,
     clockIn: clockIn,
+    breakStart: breakStart,
+    breakEnd: breakEnd,
+    breakMinutes: breakMinutes,
+    timesheet: timesheet,
+    weekStart: weekStart,
+    openBreak: openBreak,
     clockOut: clockOut,
     workedMinutes: workedMinutes,
     CLOCK_IN_GRACE_MIN: CLOCK_IN_GRACE_MIN,

@@ -392,7 +392,7 @@ async function postAttendance(request, env, url) {
   const body = await readBody(request);
   const staffId = String(body.staffId || '');
   const action = String(body.action || '');
-  if (!staffId || ['in', 'out'].indexOf(action) < 0) {
+  if (!staffId || ['in', 'break-start', 'break-end', 'out'].indexOf(action) < 0) {
     return json({ error: 'bad request' }, 400);
   }
 
@@ -404,15 +404,38 @@ async function postAttendance(request, env, url) {
   const now = new Date().toISOString();
   const rec = day.attendance[staffId];
 
+  /* Незакрытый перерыв, если он есть. */
+  const openBreak = (r) => {
+    const list = (r && r.breaks) || [];
+    const last = list[list.length - 1];
+    return last && !last.end ? last : null;
+  };
+
   if (action === 'in') {
     /* Повторное нажатие не переписывает приход: верным остаётся первое. */
     if (rec && rec.in && !rec.out) return json({ ok: true, attendance: rec, version: doc.version });
-    day.attendance[staffId] = { in: (rec && rec.in) || now, out: null };
+    day.attendance[staffId] = { in: (rec && rec.in) || now, out: null, breaks: (rec && rec.breaks) || [] };
     /* Пришёл — значит уже не «отмечен отсутствующим». */
     day.absent = (day.absent || []).filter((id) => id !== staffId);
+  } else if (action === 'break-start') {
+    if (!rec || !rec.in || rec.out) return json({ error: 'not clocked in' }, 409);
+    if (!openBreak(rec)) {
+      rec.breaks = rec.breaks || [];
+      rec.breaks.push({ start: now, end: null });
+    }
+  } else if (action === 'break-end') {
+    const open = openBreak(rec);
+    if (!open) return json({ error: 'not on break' }, 409);
+    open.end = now;
   } else {
     if (!rec || !rec.in) return json({ error: 'not clocked in' }, 409);
-    if (!rec.out) rec.out = now;
+    if (!rec.out) {
+      /* Ушёл, не закрыв перерыв: закрываем тем же моментом, иначе
+         перерыв тянулся бы вечно и съедал оплаченные часы. */
+      const open = openBreak(rec);
+      if (open) open.end = now;
+      rec.out = now;
+    }
   }
 
   /* Версию не проверяем — по той же причине, что и у отметки выполнения:

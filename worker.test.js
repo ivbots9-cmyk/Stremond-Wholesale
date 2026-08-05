@@ -526,6 +526,58 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     assert.strictEqual(res.status, 400);
   });
 
+  await check('перерыв начинается и заканчивается, время серверное', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+
+    var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-start' }, tablet), env);
+    assert.strictEqual(res.status, 200);
+    var saved = JSON.parse(state.docs['day:' + DAY].body);
+    assert.strictEqual(saved.attendance.toni.breaks.length, 1);
+    assert.ok(saved.attendance.toni.breaks[0].start, 'начало перерыва должно быть записано');
+    assert.strictEqual(saved.attendance.toni.breaks[0].end, null);
+
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-end' }, tablet), env);
+    saved = JSON.parse(state.docs['day:' + DAY].body);
+    assert.ok(saved.attendance.toni.breaks[0].end, 'конец перерыва должен быть записан');
+  });
+
+  await check('перерыв без прихода отбивается', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+    var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-start' }, tablet), env);
+    assert.strictEqual(res.status, 409);
+  });
+
+  await check('конец перерыва без перерыва отбивается', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+    var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-end' }, tablet), env);
+    assert.strictEqual(res.status, 409);
+  });
+
+  await check('уход закрывает незакрытый перерыв', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-start' }, tablet), env);
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'out' }, tablet), env);
+
+    var rec = JSON.parse(state.docs['day:' + DAY].body).attendance.toni;
+    assert.ok(rec.out, 'смена закрыта');
+    assert.ok(rec.breaks[0].end, 'перерыв не должен остаться открытым — иначе он съест часы');
+  });
+
   /* ---------- чтение ---------- */
 
   await check('/api/state отдаёт настройки, день и роль', async function () {

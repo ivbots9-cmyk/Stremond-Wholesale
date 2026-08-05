@@ -222,8 +222,13 @@
       var day = lsGet(LS_DAY + date, null);
       if (!day) return Promise.resolve({ error: 'no day' });
       var now = new Date().toISOString();
+      /* Полный разбор действий, а не «всё, что не приход — уход»:
+         иначе перерыв молча закрывал бы смену. */
       if (action === 'in') WHPlan.clockIn(day, staffId, now);
-      else WHPlan.clockOut(day, staffId, now);
+      else if (action === 'break-start') WHPlan.breakStart(day, staffId, now);
+      else if (action === 'break-end') WHPlan.breakEnd(day, staffId, now);
+      else if (action === 'out') WHPlan.clockOut(day, staffId, now);
+      else return Promise.resolve({ error: 'bad action' });
       lsSet(LS_DAY + date, day);
       return Promise.resolve({ ok: true, attendance: (day.attendance || {})[staffId] });
     }

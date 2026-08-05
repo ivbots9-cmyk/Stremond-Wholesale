@@ -786,5 +786,139 @@ check('пока пауза не вышла, план не трогают', funct
     'до конца паузы работу забирать нельзя');
 });
 
+/* ---------- перерывы и табель ---------- */
+
+check('перерыв не снимает человека с работы', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];
+
+  P.clockIn(day, kris.id, '2026-08-05T09:30:00.000Z');
+  P.breakStart(day, kris.id, '2026-08-05T11:50:00.000Z');
+
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, 12 * 60), 'break');
+  assert.ok(P.isAvailable(kris, day, 12 * 60, cfg), 'он вернётся — работу снимать нельзя');
+});
+
+check('перерыв вычитается из отработанного', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T12:00:00.000Z');
+  P.breakEnd(day, 'kris', '2026-08-05T12:30:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
+
+  assert.strictEqual(P.breakMinutes(day, 'kris'), 30);
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 450, '8 часов минус полчаса перерыва');
+});
+
+check('несколько перерывов складываются', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T11:00:00.000Z');
+  P.breakEnd(day, 'kris', '2026-08-05T11:10:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T13:00:00.000Z');
+  P.breakEnd(day, 'kris', '2026-08-05T13:20:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
+
+  assert.strictEqual(P.breakMinutes(day, 'kris'), 30);
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 450);
+});
+
+check('второй перерыв подряд не начинается', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T11:00:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T11:05:00.000Z');
+  assert.strictEqual(day.attendance.kris.breaks.length, 1);
+  assert.strictEqual(day.attendance.kris.breaks[0].start, '2026-08-05T11:00:00.000Z');
+});
+
+check('ушёл, не закрыв перерыв — перерыв закрывается уходом', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T16:00:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
+
+  assert.strictEqual(day.attendance.kris.breaks[0].end, '2026-08-05T17:00:00.000Z',
+    'иначе перерыв тянулся бы вечно и съедал часы');
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 420, '8 часов минус час незакрытого перерыва');
+});
+
+check('перерыв нельзя начать, не отметив приход', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.breakStart(day, 'kris', '2026-08-05T11:00:00.000Z');
+  assert.ok(!day.attendance || !day.attendance.kris);
+});
+
+check('открытый перерыв растёт до текущего момента', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T11:00:00.000Z');
+  assert.strictEqual(P.breakMinutes(day, 'kris', '2026-08-05T11:15:00.000Z'), 15);
+});
+
+check('табель считает часы и деньги по закрытым сменам', function () {
+  var cfg = P.defaultConfig();
+  cfg.staff[0].rate = 20;                      // 20 в час
+
+  var d1 = P.emptyDay('2026-08-03');
+  P.clockIn(d1, cfg.staff[0].id, '2026-08-03T09:00:00.000Z');
+  P.clockOut(d1, cfg.staff[0].id, '2026-08-03T17:00:00.000Z');   // 8 ч
+
+  var d2 = P.emptyDay('2026-08-04');
+  P.clockIn(d2, cfg.staff[0].id, '2026-08-04T09:00:00.000Z');
+  P.breakStart(d2, cfg.staff[0].id, '2026-08-04T12:00:00.000Z');
+  P.breakEnd(d2, cfg.staff[0].id, '2026-08-04T12:30:00.000Z');
+  P.clockOut(d2, cfg.staff[0].id, '2026-08-04T17:00:00.000Z');   // 7,5 ч
+
+  var rows = P.timesheet(cfg, [d1, d2]);
+  var kris = rows.filter(function (r) { return r.staff.id === cfg.staff[0].id; })[0];
+
+  assert.strictEqual(kris.workedMin, 930, '8 ч + 7,5 ч');
+  assert.strictEqual(kris.hours, 15.5);
+  assert.strictEqual(kris.pay, 310, '15,5 часа × 20');
+  assert.strictEqual(kris.breakMin, 30);
+  assert.strictEqual(kris.closedDays, 2);
+});
+
+check('незакрытая смена в деньги не идёт', function () {
+  var cfg = P.defaultConfig();
+  cfg.staff[0].rate = 20;
+
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
+
+  var kris = P.timesheet(cfg, [day], '2026-08-05T12:00:00.000Z')
+    .filter(function (r) { return r.staff.id === cfg.staff[0].id; })[0];
+
+  assert.strictEqual(kris.workedMin, 0, 'платить за незакончившийся день нельзя');
+  assert.strictEqual(kris.pay, 0);
+  assert.strictEqual(kris.openMin, 180, 'но показать «набежало 3 часа» — можно');
+});
+
+check('без ставки табель считает часы, но не деньги', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
+  P.clockOut(day, cfg.staff[0].id, '2026-08-05T17:00:00.000Z');
+
+  var kris = P.timesheet(cfg, [day]).filter(function (r) { return r.staff.id === cfg.staff[0].id; })[0];
+  assert.strictEqual(kris.hours, 8);
+  assert.strictEqual(kris.pay, 0, 'ставки нет — суммы нет, а не выдуманная');
+});
+
+check('удалённый из справочника человек табель не роняет', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.attendance = { ghost: { in: '2026-08-05T09:00:00.000Z', out: '2026-08-05T17:00:00.000Z', breaks: [] } };
+  assert.doesNotThrow(function () { P.timesheet(cfg, [day]); });
+});
+
+check('неделя начинается с понедельника', function () {
+  assert.strictEqual(P.weekStart('2026-08-05'), '2026-08-03', 'среда → понедельник той же недели');
+  assert.strictEqual(P.weekStart('2026-08-03'), '2026-08-03', 'сам понедельник не двигается');
+  assert.strictEqual(P.weekStart('2026-08-09'), '2026-08-03', 'воскресенье относится к прошедшей неделе');
+});
+
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');
 process.exit(failed ? 1 : 0);
