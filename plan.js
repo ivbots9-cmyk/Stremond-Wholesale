@@ -494,6 +494,13 @@
       blocks: null,
       jobs: [],
       absent: [],
+      /*
+       * Кто отметился на смене. Ключ — id сотрудника, значение —
+       * { in, out } с моментами нажатия в ISO. Отдельно от absent:
+       * absent — решение менеджера, attendance — факт с планшета, и
+       * смешивать их нельзя, иначе непонятно, кто кого переопределил.
+       */
+      attendance: {},
       volumes: {},
       note: '',
       updatedAt: null
@@ -628,13 +635,93 @@
      Отсутствие и перераспределение
      ============================================================ */
 
-  function isAvailable(staff, day) {
-    if (!staff || staff.status !== 'active') return false;
-    return (day.absent || []).indexOf(staff.id) < 0;
+  /*
+   * Сколько ждём человека после начала его смены, прежде чем считать,
+   * что он не вышел. Без этой паузы план разваливался бы каждое утро:
+   * в 09:30 ещё никто не успел дойти до планшета.
+   */
+  var CLOCK_IN_GRACE_MIN = 20;
+
+  /*
+   * Состояние человека на сегодня. Пять значений, и каждое отвечает на
+   * свой вопрос:
+   *
+   *   'left'     — не работает у нас, в плане не участвует вовсе;
+   *   'vacation' — в отпуске, известно заранее;
+   *   'absent'   — менеджер отметил, что человека сегодня нет;
+   *   'in'       — отметился на планшете и ещё не закрыл смену;
+   *   'out'      — отметился и закрыл смену;
+   *   'expected' — смена ещё не началась (или идёт пауза ожидания),
+   *                человека ждём и работу на него планируем;
+   *   'noshow'   — смена началась, пауза прошла, а он не отметился.
+   *
+   * nowMin — минуты от полуночи. Передаётся снаружи, чтобы функция
+   * оставалась чистой и её можно было проверить тестом на любой момент.
+   */
+  function attendanceOf(config, day, staff, nowMin) {
+    if (!staff) return 'left';
+    if (staff.status === 'left') return 'left';
+    if (staff.status === 'vacation') return 'vacation';
+    if ((day.absent || []).indexOf(staff.id) >= 0) return 'absent';
+
+    var rec = (day.attendance || {})[staff.id];
+    if (rec && rec.out) return 'out';
+    if (rec && rec.in) return 'in';
+
+    /* Без часов судить о неявке нельзя — считаем, что человека ждём. */
+    if (nowMin == null) return 'expected';
+
+    var shift = shiftOf(config, staff);
+    return nowMin >= shift.start + CLOCK_IN_GRACE_MIN ? 'noshow' : 'expected';
   }
 
-  function availableStaff(config, day) {
-    return (config.staff || []).filter(function (s) { return isAvailable(s, day); });
+  /*
+   * Работу планируем на того, кто на смене или кого ещё ждём. Тот, кто
+   * не отметился после паузы, и тот, кто уже закрыл смену, из плана
+   * выпадают — их задачи уходят остальным.
+   */
+  function isAvailable(staff, day, nowMin, config) {
+    var st = attendanceOf(config, day, staff, nowMin);
+    return st === 'in' || st === 'expected';
+  }
+
+  function availableStaff(config, day, nowMin) {
+    return (config.staff || []).filter(function (s) { return isAvailable(s, day, nowMin, config); });
+  }
+
+  /*
+   * Отметка прихода и ухода. Момент нажатия сохраняется как есть —
+   * именно он потом пойдёт в табель, поэтому округлять или подгонять
+   * его под расписание нельзя.
+   *
+   * Повторное нажатие «пришёл» время прихода не переписывает: если
+   * человек нажал дважды, верным остаётся первое нажатие.
+   */
+  function clockIn(day, staffId, iso) {
+    day.attendance = day.attendance || {};
+    var rec = day.attendance[staffId];
+    if (rec && rec.in && !rec.out) return day;
+    day.attendance[staffId] = { in: (rec && rec.in) || iso, out: null };
+    /* Пришёл — значит уже не «отмечен отсутствующим». */
+    day.absent = (day.absent || []).filter(function (id) { return id !== staffId; });
+    return day;
+  }
+
+  function clockOut(day, staffId, iso) {
+    day.attendance = day.attendance || {};
+    var rec = day.attendance[staffId];
+    if (!rec || !rec.in) return day;
+    if (rec.out) return day;
+    rec.out = iso;
+    return day;
+  }
+
+  /* Сколько человек отработал по отметкам. null — смена не закрыта. */
+  function workedMinutes(day, staffId) {
+    var rec = (day.attendance || {})[staffId];
+    if (!rec || !rec.in || !rec.out) return null;
+    var ms = new Date(rec.out).getTime() - new Date(rec.in).getTime();
+    return ms > 0 ? Math.round(ms / 60000) : 0;
   }
 
   /* Умеет ли человек эту задачу. Пустой список навыков = универсал:
@@ -667,9 +754,15 @@
    * вперёд. Длинный блок сложнее пристроить, и если раздать сперва
    * мелочь, он упрётся в того, кто уже загружен.
    */
-  function applyAbsence(config, day) {
+  /*
+   * nowMin необязателен. Передали — из плана выпадают и те, кто не
+   * отметился после паузы ожидания; не передали — считаются только
+   * отпуск, увольнение и отметка менеджера. Так старые вызовы (и тесты
+   * на них) продолжают значить ровно то же, что значили.
+   */
+  function applyAbsence(config, day, nowMin) {
     var blocks = day.blocks || [];
-    var people = availableStaff(config, day);
+    var people = availableStaff(config, day, nowMin);
     var byId = indexBy(config.staff || []);
 
     /* Вернуть блоки тому, кто снова на месте: снятая галочка
@@ -677,7 +770,7 @@
     blocks.forEach(function (b) {
       if (!b.fromStaffId) return;
       var owner = byId[b.fromStaffId];
-      if (owner && isAvailable(owner, day)) {
+      if (owner && isAvailable(owner, day, nowMin, config)) {
         b.staffId = b.fromStaffId;
         b.fromStaffId = null;
         b.warn = '';
@@ -686,7 +779,7 @@
 
     if (!people.length) {
       blocks.forEach(function (b) {
-        if (b.staffId && !isAvailable(byId[b.staffId], day)) {
+        if (b.staffId && !isAvailable(byId[b.staffId], day, nowMin, config)) {
           b.fromStaffId = b.fromStaffId || b.staffId;
           b.staffId = null;
           /* Код, а не текст: строку соберёт экран на своём языке. */
@@ -1066,7 +1159,7 @@
    * Полная раскладка дня: дорожки по людям, сводка и предупреждения.
    * Ничего не меняет во входных данных — вызывается на каждую отрисовку.
    */
-  function schedule(config, day) {
+  function schedule(config, day, nowMin) {
     var byId = indexBy(config.staff || []);
     var blocks = day.blocks || [];
     var lanes = [];
@@ -1082,7 +1175,7 @@
 
       lanes.push({
         staff: s,
-        available: isAvailable(s, day),
+        available: isAvailable(s, day, nowMin, config),
         absent: (day.absent || []).indexOf(s.id) >= 0,
         vacation: s.status === 'vacation',
         items: lay.items,
@@ -1241,6 +1334,11 @@
     autoAssign: autoAssign,
     availableStaff: availableStaff,
     isAvailable: isAvailable,
+    attendanceOf: attendanceOf,
+    clockIn: clockIn,
+    clockOut: clockOut,
+    workedMinutes: workedMinutes,
+    CLOCK_IN_GRACE_MIN: CLOCK_IN_GRACE_MIN,
     canDo: canDo,
     priorityOf: priorityOf,
     destOf: destOf,
