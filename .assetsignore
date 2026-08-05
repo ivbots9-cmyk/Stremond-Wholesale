@@ -30,3 +30,9 @@ README.md
 node_modules
 package.json
 package-lock.json
+
+# Cloudflare ставит зависимости через bun и оставляет lock-файл в корне
+# сборки. В репозитории его нет, поэтому в первый деплой он незаметно
+# уехал в статику.
+bun.lock
+bun.lockb
