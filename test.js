@@ -800,15 +800,34 @@ check('перерыв не снимает человека с работы', fun
   assert.ok(P.isAvailable(kris, day, 12 * 60, cfg), 'он вернётся — работу снимать нельзя');
 });
 
-check('перерыв вычитается из отработанного', function () {
+check('перерыв оплачивается: из отработанного не вычитается', function () {
   var day = P.emptyDay('2026-08-05');
   P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
   P.breakStart(day, 'kris', '2026-08-05T12:00:00.000Z');
   P.breakEnd(day, 'kris', '2026-08-05T12:30:00.000Z');
   P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
 
-  assert.strictEqual(P.breakMinutes(day, 'kris'), 30);
-  assert.strictEqual(P.workedMinutes(day, 'kris'), 450, '8 часов минус полчаса перерыва');
+  assert.strictEqual(P.breakMinutes(day, 'kris'), 30, 'перерыв виден отдельно');
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 480, 'с 09:00 до 17:00 целиком');
+});
+
+check('неоплачиваемые перерывы вычитаются, если так настроено', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.breakStart(day, 'kris', '2026-08-05T12:00:00.000Z');
+  P.breakEnd(day, 'kris', '2026-08-05T12:30:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
+
+  assert.strictEqual(P.workedMinutes(day, 'kris', false), 450, '8 часов минус полчаса');
+});
+
+check('оплата перерывов — настройка, а не зашитое правило', function () {
+  var cfg = P.defaultConfig();
+  assert.strictEqual(P.paidBreaks(cfg), true, 'на этом складе перерывы оплачиваются');
+
+  cfg.rules = cfg.rules || {};
+  cfg.rules.paidBreaks = false;
+  assert.strictEqual(P.paidBreaks(cfg), false);
 });
 
 check('несколько перерывов складываются', function () {
@@ -821,7 +840,8 @@ check('несколько перерывов складываются', function
   P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
 
   assert.strictEqual(P.breakMinutes(day, 'kris'), 30);
-  assert.strictEqual(P.workedMinutes(day, 'kris'), 450);
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 480, 'перерывы оплачиваются');
+  assert.strictEqual(P.workedMinutes(day, 'kris', false), 450);
 });
 
 check('второй перерыв подряд не начинается', function () {
@@ -840,8 +860,10 @@ check('ушёл, не закрыв перерыв — перерыв закры�
   P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
 
   assert.strictEqual(day.attendance.kris.breaks[0].end, '2026-08-05T17:00:00.000Z',
-    'иначе перерыв тянулся бы вечно и съедал часы');
-  assert.strictEqual(P.workedMinutes(day, 'kris'), 420, '8 часов минус час незакрытого перерыва');
+    'иначе перерыв тянулся бы вечно');
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 480, 'перерыв оплачивается — вычитать нечего');
+  assert.strictEqual(P.workedMinutes(day, 'kris', false), 420,
+    'а при неоплачиваемых незакрытый перерыв не съедает больше часа');
 });
 
 check('перерыв нельзя начать, не отметив приход', function () {
@@ -874,11 +896,42 @@ check('табель считает часы и деньги по закрыты�
   var rows = P.timesheet(cfg, [d1, d2]);
   var kris = rows.filter(function (r) { return r.staff.id === cfg.staff[0].id; })[0];
 
-  assert.strictEqual(kris.workedMin, 930, '8 ч + 7,5 ч');
-  assert.strictEqual(kris.hours, 15.5);
-  assert.strictEqual(kris.pay, 310, '15,5 часа × 20');
-  assert.strictEqual(kris.breakMin, 30);
+  assert.strictEqual(kris.workedMin, 960, '8 ч + 8 ч: перерыв внутри второго дня оплачен');
+  assert.strictEqual(kris.hours, 16);
+  assert.strictEqual(kris.pay, 320, '16 часов × 20');
+  assert.strictEqual(kris.breakMin, 30, 'перерыв всё равно виден отдельной колонкой');
   assert.strictEqual(kris.closedDays, 2);
+  assert.strictEqual(kris.paidBreaks, true);
+});
+
+check('при неоплачиваемых перерывах табель платит меньше', function () {
+  var cfg = P.defaultConfig();
+  cfg.staff[0].rate = 20;
+  cfg.rules = cfg.rules || {};
+  cfg.rules.paidBreaks = false;
+
+  var day = P.emptyDay('2026-08-04');
+  P.clockIn(day, cfg.staff[0].id, '2026-08-04T09:00:00.000Z');
+  P.breakStart(day, cfg.staff[0].id, '2026-08-04T12:00:00.000Z');
+  P.breakEnd(day, cfg.staff[0].id, '2026-08-04T12:30:00.000Z');
+  P.clockOut(day, cfg.staff[0].id, '2026-08-04T17:00:00.000Z');
+
+  var kris = P.timesheet(cfg, [day]).filter(function (r) { return r.staff.id === cfg.staff[0].id; })[0];
+  assert.strictEqual(kris.hours, 7.5);
+  assert.strictEqual(kris.pay, 150);
+  assert.strictEqual(kris.paidBreaks, false);
+});
+
+check('«уже набежало» считается по тем же правилам, что и итог дня', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
+  P.breakStart(day, cfg.staff[0].id, '2026-08-05T10:00:00.000Z');
+  P.breakEnd(day, cfg.staff[0].id, '2026-08-05T10:30:00.000Z');
+
+  var kris = P.timesheet(cfg, [day], '2026-08-05T12:00:00.000Z')
+    .filter(function (r) { return r.staff.id === cfg.staff[0].id; })[0];
+  assert.strictEqual(kris.openMin, 180, 'три часа целиком: перерыв оплачен');
 });
 
 check('незакрытая смена в деньги не идёт', function () {

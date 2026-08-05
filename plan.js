@@ -761,6 +761,7 @@
    * и всё остальное — не наша забота, о чём сказано и на экране.
    */
   function timesheet(config, days, nowIso) {
+    var paid = paidBreaks(config);
     var byStaff = {};
     (config.staff || []).forEach(function (s) {
       byStaff[s.id] = {
@@ -782,12 +783,16 @@
         var rec = day.attendance[staffId];
         if (!rec || !rec.in) return;
 
-        var worked = workedMinutes(day, staffId);
+        var worked = workedMinutes(day, staffId, paid);
         var brk = Math.round(breakMinutes(day, staffId, nowIso));
 
         if (worked == null) {
-          /* Смена не закрыта — считаем «набежало на сейчас», отдельно. */
-          var running = nowIso ? Math.max(0, Math.round(minutesBetween(rec.in, nowIso) - brk)) : 0;
+          /* Смена не закрыта — считаем «набежало на сейчас», отдельно.
+             По тем же правилам, что и закрытая: иначе строка «уже
+             набежало» противоречила бы итогу того же дня вечером. */
+          var running = nowIso
+            ? Math.max(0, Math.round(minutesBetween(rec.in, nowIso) - (paid ? 0 : brk)))
+            : 0;
           row.openMin += running;
         } else {
           row.workedMin += worked;
@@ -806,6 +811,7 @@
 
     return Object.keys(byStaff).map(function (id) {
       var r = byStaff[id];
+      r.paidBreaks = paid;
       r.days.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
       r.hours = Math.round(r.workedMin / 60 * 100) / 100;
       r.pay = Math.round(r.hours * r.rate * 100) / 100;
@@ -841,18 +847,32 @@
   }
 
   /*
-   * Отработанное время: от прихода до ухода минус перерывы. Именно это
-   * число идёт в табель, поэтому перерывы вычитаются всегда — за них не
-   * платят.
+   * Оплачиваются ли перерывы. На этом складе — да, поэтому такое значение
+   * по умолчанию. Настройкой это сделано не «на всякий случай»: если
+   * когда-нибудь появится получасовой обед, который по закону не
+   * оплачивают, менять придётся галочку, а не расчёт зарплаты в коде.
+   */
+  function paidBreaks(config) {
+    var rules = (config && config.rules) || {};
+    return rules.paidBreaks !== false;
+  }
+
+  /*
+   * Отработанное время, которое идёт в оплату.
+   *
+   * paidBreaks = true (по умолчанию) — считаем от прихода до ухода:
+   * перерыв оплачивается, вычитать его нельзя.
+   * paidBreaks = false — перерывы вычитаются.
    *
    * null означает «смена не закрыта», а не ноль: разница важна, чтобы в
-   * табеле не появлялись выдуманные нули за незакрытый день.
+   * табеле не появлялись выдуманные нули за незакончившийся день.
    */
-  function workedMinutes(day, staffId) {
+  function workedMinutes(day, staffId, paid) {
     var rec = (day.attendance || {})[staffId];
     if (!rec || !rec.in || !rec.out) return null;
     var gross = minutesBetween(rec.in, rec.out);
-    return Math.max(0, Math.round(gross - breakMinutes(day, staffId)));
+    var deduct = paid === false ? breakMinutes(day, staffId) : 0;
+    return Math.max(0, Math.round(gross - deduct));
   }
 
   /* Умеет ли человек эту задачу. Пустой список навыков = универсал:
@@ -1470,6 +1490,7 @@
     breakStart: breakStart,
     breakEnd: breakEnd,
     breakMinutes: breakMinutes,
+    paidBreaks: paidBreaks,
     timesheet: timesheet,
     weekStart: weekStart,
     openBreak: openBreak,
