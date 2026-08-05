@@ -372,7 +372,63 @@
     }
     /* Смена закрыта — открывать нечего: день человека уже посчитан. */
 
+    renderMusic(staff);
     openModal('who-modal');
+  }
+
+  /*
+   * Музыка. Показывается здесь, потому что сотрудники не смотрят на
+   * планшет постоянно — они подходят, когда им надо, и открывают именно
+   * это окно. Значит, здесь текст точно прочитают, а на общем экране
+   * он мог бы висеть весь день незамеченным.
+   */
+  function renderMusic(staff) {
+    var box = $('who-music');
+    box.innerHTML = '';
+
+    var turn = P.musicTurn(app.config, app.day, new Date().toISOString());
+    var mine = staff.musicUrl;
+
+    /* Ни очереди, ни своей ссылки — блок не показываем вовсе, чтобы окно
+       не обрастало пустыми разделами. */
+    if (!turn && !mine) { box.hidden = true; return; }
+    box.hidden = false;
+
+    if (turn) {
+      var isMine = turn.current.id === staff.id;
+      var line = el('p');
+      if (isMine) {
+        line.appendChild(el('b', null, T.t('music.yourTurn', { name: staff.name })));
+      } else {
+        line.innerHTML = '';
+        line.appendChild(document.createTextNode(
+          T.t('music.turnOf', { name: turn.current.name, left: P.human(turn.minutesLeft) })));
+      }
+      box.appendChild(line);
+
+      if (turn.queue.length > 1) {
+        box.appendChild(el('p', 'muted', T.t('music.next', { name: turn.next.name })));
+      }
+
+      box.appendChild(musicButton(turn.current, isMine));
+      return;
+    }
+
+    /* Очереди нет (никто ещё не отметился), но своя ссылка есть. */
+    box.appendChild(musicButton(staff, true));
+  }
+
+  function musicButton(staff, isMine) {
+    var b = el('button', isMine ? 'is-mine' : '',
+      T.t(isMine ? 'music.openMine' : 'music.open', { name: staff.name }));
+    b.type = 'button';
+    b.disabled = !staff.musicUrl;
+    b.onclick = function () {
+      /* Новая вкладка, а не переход: план должен остаться там, где был —
+         вернуться надо одним движением, а не через «назад». */
+      window.open(staff.musicUrl, '_blank', 'noopener');
+    };
+    return b;
   }
 
   function sendClock(staff, action) {
@@ -609,6 +665,29 @@
     if (b.warn) meta.appendChild(el('span', 'tag tag--warn', b.warn));
     if (item.crossedBreak) meta.appendChild(el('span', 'tag', T.t('task.withBreak', { name: item.crossedBreak.toLowerCase() })));
     if (item.overtime) meta.appendChild(el('span', 'tag tag--warn', T.t('task.overtime')));
+
+    /*
+     * Факт против плана. Видит только тот, кто ведёт склад: сотруднику
+     * счётчик над задачей превратил бы работу в гонку, и он начал бы
+     * жать «Готово» заранее — испортив ровно те данные, ради которых
+     * замер и делается.
+     */
+    if (app.admin) {
+      var actual = P.actualMinutes(b, new Date().toISOString());
+      if (actual != null) {
+        if (b.status === 'active') {
+          meta.appendChild(el('span', 'tag tag--fact', T.t('fact.running', { time: P.human(actual) })));
+        } else {
+          meta.appendChild(el('span', 'tag tag--fact', T.t('fact.actual', { time: P.human(actual) })));
+          var d = P.drift(app.config, b);
+          /* Расхождение меньше пяти минут — шум, а не сигнал. */
+          if (d != null && Math.abs(d) >= 5) {
+            meta.appendChild(el('span', 'tag ' + (d > 0 ? 'tag--over' : 'tag--under'),
+              T.t(d > 0 ? 'fact.over' : 'fact.under', { time: P.human(Math.abs(d)) })));
+          }
+        }
+      }
+    }
     if (b.note) meta.appendChild(el('span', 'tag tag--note', b.note));
     if (meta.childNodes.length) node.appendChild(meta);
 
@@ -1465,8 +1544,24 @@
         chips.appendChild(chip);
       });
       card.appendChild(chips);
+
+      /* Ссылка на музыку. Своя у каждого — они слушают разное, и в этом
+         весь смысл очереди. */
+      var musicWrap = el('label', 'field');
+      musicWrap.style.marginTop = '10px';
+      musicWrap.appendChild(el('span', null, T.t('music.link')));
+      var music = document.createElement('input');
+      music.type = 'url';
+      music.value = s.musicUrl || '';
+      music.placeholder = 'https://';
+      music.onchange = function () { s.musicUrl = music.value.trim(); };
+      musicWrap.appendChild(music);
+      card.appendChild(musicWrap);
+
       box.appendChild(card);
     });
+
+    box.appendChild(el('p', 'muted', T.t('music.linkHint')));
 
     var add = el('button', 'btn btn--sm btn--ghost', T.t('setup.addPerson'));
     add.type = 'button';
@@ -1549,6 +1644,23 @@
     paidWrap.appendChild(el('span', null, T.t('setup.paidBreaks')));
     box.appendChild(paidWrap);
     box.appendChild(el('p', 'muted', T.t('setup.paidBreaksHint')));
+
+    /* Музыка — свойство смены: очередь идёт по тем, кто сегодня вышел. */
+    box.appendChild(el('h2', null, T.t('music.title')));
+    var turnWrap = el('label', 'field');
+    turnWrap.appendChild(el('span', null, T.t('music.turnLength')));
+    var turnMin = document.createElement('input');
+    turnMin.type = 'number';
+    turnMin.min = '15';
+    turnMin.step = '15';
+    turnMin.value = (app.draftConfig.rules && app.draftConfig.rules.musicTurnMin) || 120;
+    turnMin.onchange = function () {
+      app.draftConfig.rules = app.draftConfig.rules || {};
+      app.draftConfig.rules.musicTurnMin = Math.max(15, Number(turnMin.value) || 120);
+    };
+    turnWrap.appendChild(turnMin);
+    box.appendChild(turnWrap);
+    box.appendChild(el('p', 'muted', T.t('music.turnLengthHint')));
 
     renderAccessSection(box);
   }

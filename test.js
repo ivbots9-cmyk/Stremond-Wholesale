@@ -973,5 +973,125 @@ check('неделя начинается с понедельника', function 
   assert.strictEqual(P.weekStart('2026-08-09'), '2026-08-03', 'воскресенье относится к прошедшей неделе');
 });
 
+/* ---------- план против факта ---------- */
+
+check('«Начал» и «Готово» засекают время без отдельной кнопки', function () {
+  var b = { id: 'b1', status: 'planned' };
+
+  P.markProgress(b, 'active', '2026-08-05T10:00:00.000Z');
+  assert.strictEqual(b.status, 'active');
+  assert.strictEqual(b.startedAt, '2026-08-05T10:00:00.000Z');
+  assert.strictEqual(P.actualMinutes(b), null, 'пока не закончил — факта нет');
+
+  P.markProgress(b, 'done', '2026-08-05T11:40:00.000Z');
+  assert.strictEqual(P.actualMinutes(b), 100, '1 ч 40 мин');
+});
+
+check('идущая задача показывает, сколько уже длится', function () {
+  var b = { id: 'b1', status: 'planned' };
+  P.markProgress(b, 'active', '2026-08-05T10:00:00.000Z');
+  assert.strictEqual(P.actualMinutes(b, '2026-08-05T10:30:00.000Z'), 30);
+});
+
+check('после снятия статуса отсчёт начинается заново, а не продолжает старый', function () {
+  var b = { id: 'b1', status: 'planned' };
+  P.markProgress(b, 'active', '2026-08-05T10:00:00.000Z');
+  P.markProgress(b, 'planned', '2026-08-05T10:05:00.000Z');
+  P.markProgress(b, 'active', '2026-08-05T10:10:00.000Z');
+  assert.strictEqual(b.startedAt, '2026-08-05T10:10:00.000Z',
+    'снятие статуса стирает замер, и новый отсчёт честно начинается заново');
+});
+
+check('снятие статуса стирает замер, а не оставляет половину', function () {
+  var b = { id: 'b1', status: 'planned' };
+  P.markProgress(b, 'active', '2026-08-05T10:00:00.000Z');
+  P.markProgress(b, 'done', '2026-08-05T11:00:00.000Z');
+  P.markProgress(b, 'planned', '2026-08-05T11:05:00.000Z');
+  assert.strictEqual(b.startedAt, null);
+  assert.strictEqual(b.doneAt, null);
+  assert.strictEqual(P.actualMinutes(b), null, 'незаконченный замер хуже отсутствующего');
+});
+
+check('«Готово» без «Начал» факта не выдумывает', function () {
+  var b = { id: 'b1', status: 'planned' };
+  P.markProgress(b, 'done', '2026-08-05T11:00:00.000Z');
+  assert.strictEqual(P.actualMinutes(b), null, 'засекать не по чему — и ноль тут был бы враньём');
+});
+
+check('расхождение плана и факта считается со знаком', function () {
+  var cfg = P.defaultConfig();
+  var day = P.materialize(cfg, P.emptyDay('2026-08-05'));
+  var b = day.blocks.filter(function (x) { return x.mode === 'time' && x.duration; })[0];
+  assert.ok(b, 'для проверки нужна задача с заданным временем');
+
+  var planned = P.durationOf(cfg, b);
+  P.markProgress(b, 'active', '2026-08-05T09:00:00.000Z');
+  P.markProgress(b, 'done', new Date(Date.parse('2026-08-05T09:00:00.000Z') + (planned + 25) * 60000).toISOString());
+
+  assert.strictEqual(P.drift(cfg, b), 25, 'на 25 минут дольше плана');
+});
+
+/* ---------- очередь музыки ---------- */
+
+check('очередь музыки считается от первого прихода', function () {
+  var cfg = P.defaultConfig();
+  cfg.rules = cfg.rules || {};
+  cfg.rules.musicTurnMin = 120;
+  cfg.staff[0].musicUrl = 'https://example.com/a';
+  cfg.staff[2].musicUrl = 'https://example.com/b';
+
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
+  P.clockIn(day, cfg.staff[2].id, '2026-08-05T09:30:00.000Z');
+
+  var first = P.musicTurn(cfg, day, '2026-08-05T10:00:00.000Z');
+  assert.strictEqual(first.current.id, cfg.staff[0].id, 'первый слот у первого в списке');
+  assert.strictEqual(first.next.id, cfg.staff[2].id);
+  assert.strictEqual(first.minutesLeft, 60, 'до смены очереди час');
+
+  var second = P.musicTurn(cfg, day, '2026-08-05T11:30:00.000Z');
+  assert.strictEqual(second.current.id, cfg.staff[2].id, 'через два часа очередь перешла');
+});
+
+check('очередь идёт по кругу', function () {
+  var cfg = P.defaultConfig();
+  cfg.rules = { musicTurnMin: 60 };
+  cfg.staff[0].musicUrl = 'a';
+  cfg.staff[2].musicUrl = 'b';
+
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
+  P.clockIn(day, cfg.staff[2].id, '2026-08-05T09:00:00.000Z');
+
+  assert.strictEqual(P.musicTurn(cfg, day, '2026-08-05T11:30:00.000Z').current.id, cfg.staff[0].id,
+    'третий час — снова первый');
+});
+
+check('ушедший из очереди выпадает', function () {
+  var cfg = P.defaultConfig();
+  cfg.rules = { musicTurnMin: 120 };
+  cfg.staff[0].musicUrl = 'a';
+  cfg.staff[2].musicUrl = 'b';
+
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
+  P.clockIn(day, cfg.staff[2].id, '2026-08-05T09:00:00.000Z');
+  P.clockOut(day, cfg.staff[0].id, '2026-08-05T13:00:00.000Z');
+
+  var turn = P.musicTurn(cfg, day, '2026-08-05T14:00:00.000Z');
+  assert.strictEqual(turn.queue.length, 1);
+  assert.strictEqual(turn.current.id, cfg.staff[2].id);
+});
+
+check('без ссылок и без людей очереди нет, а не пустая карточка', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  assert.strictEqual(P.musicTurn(cfg, day, '2026-08-05T10:00:00.000Z'), null);
+
+  P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
+  assert.strictEqual(P.musicTurn(cfg, day, '2026-08-05T10:00:00.000Z'), null,
+    'человек есть, ссылки нет — очередь не из чего строить');
+});
+
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');
 process.exit(failed ? 1 : 0);

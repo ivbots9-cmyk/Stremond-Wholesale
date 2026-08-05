@@ -198,7 +198,10 @@
       if (!day || !day.blocks) return Promise.resolve({ error: 'no day' });
       var b = day.blocks.filter(function (x) { return x.id === blockId; })[0];
       if (!b) return Promise.resolve({ error: 'no block' });
-      b.status = status;
+      /* Через ту же функцию, что и на сервере: метки времени должны
+         появляться одинаково, иначе локальный режим тихо теряет факт. */
+      WHPlan.markProgress(b, status, new Date().toISOString());
+      b.statusAt = b.statusAt || new Date().toISOString();
       if (doneQty != null) b.doneQty = doneQty;
       lsSet(LS_DAY + date, day);
       return Promise.resolve({ ok: true });

@@ -821,6 +821,44 @@
     });
   }
 
+  /*
+   * Чья сейчас очередь ставить музыку.
+   *
+   * Считается, а не хранится: любое хранимое «сейчас очередь Криса»
+   * пришлось бы двигать по таймеру и чинить после перезагрузки. Здесь
+   * очередь — чистая функция от того, кто на смене и сколько прошло с
+   * начала дня, поэтому на всех устройствах она одинаковая сама собой.
+   *
+   * В круг входят только те, кто отметился и не ушёл: смысла ставить
+   * очередь тому, кого нет, никакого.
+   */
+  function musicTurn(config, day, nowIso) {
+    var minutes = (config.rules && config.rules.musicTurnMin) || 120;
+
+    var present = (config.staff || []).filter(function (s) {
+      var rec = (day.attendance || {})[s.id];
+      return rec && rec.in && !rec.out && s.musicUrl;
+    });
+    if (!present.length || !nowIso) return null;
+
+    /* Отсчёт от первого прихода за день — это и есть начало дня по факту. */
+    var starts = present.map(function (s) { return day.attendance[s.id].in; }).sort();
+    var anchor = starts[0];
+
+    var passed = minutesBetween(anchor, nowIso);
+    var slot = Math.floor(passed / minutes);
+    var idx = ((slot % present.length) + present.length) % present.length;
+
+    var endsInMin = minutes - (passed - slot * minutes);
+    return {
+      current: present[idx],
+      next: present[(idx + 1) % present.length],
+      minutesLeft: Math.max(0, Math.round(endsInMin)),
+      turnMinutes: minutes,
+      queue: present
+    };
+  }
+
   /* Понедельник недели, в которую попадает дата. */
   function weekStart(iso) {
     var p = String(iso).split('-');
@@ -828,6 +866,55 @@
     var shift = (d.getDay() + 6) % 7;           // 0 = понедельник
     d.setDate(d.getDate() - shift);
     return todayISO(d);
+  }
+
+  /*
+   * План против факта.
+   *
+   * Метки ставятся на тех же нажатиях «Начал» и «Готово», которые на
+   * складе делают и так — отдельной кнопки-таймера нет и быть не должно.
+   * Видимый счётчик превратил бы замер в гонку: люди начали бы жать
+   * «Готово» заранее, и данные испортились бы именно там, где нужны
+   * честные.
+   *
+   * Снятие статуса обратно в 'planned' стирает обе метки: незаконченный
+   * замер хуже отсутствующего — он выглядит как настоящий.
+   */
+  function markProgress(block, status, iso) {
+    if (status === 'active') {
+      /* Повторное «Начал» время не переписывает: верным остаётся первое. */
+      if (!block.startedAt) block.startedAt = iso;
+      block.doneAt = null;
+    } else if (status === 'done') {
+      if (!block.startedAt) block.startedAt = null;   // жали «Готово», не жав «Начал»
+      block.doneAt = iso;
+    } else {
+      block.startedAt = null;
+      block.doneAt = null;
+    }
+    block.status = status;
+    return block;
+  }
+
+  /*
+   * Сколько задача заняла на самом деле. null, если засечь не по чему:
+   * не нажали «Начал» или ещё не закончили. Ноль здесь был бы враньём.
+   */
+  function actualMinutes(block, nowIso) {
+    if (!block || !block.startedAt) return null;
+    var end = block.doneAt || (block.status === 'active' ? nowIso : null);
+    if (!end) return null;
+    return Math.round(minutesBetween(block.startedAt, end));
+  }
+
+  /*
+   * Расхождение плана и факта в минутах: плюс — дольше плана.
+   * null, пока факта нет.
+   */
+  function drift(config, block, nowIso) {
+    var actual = actualMinutes(block, nowIso);
+    if (actual == null) return null;
+    return actual - durationOf(config, block);
   }
 
   function minutesBetween(a, b) {
@@ -1493,9 +1580,13 @@
     paidBreaks: paidBreaks,
     timesheet: timesheet,
     weekStart: weekStart,
+    musicTurn: musicTurn,
     openBreak: openBreak,
     clockOut: clockOut,
     workedMinutes: workedMinutes,
+    markProgress: markProgress,
+    actualMinutes: actualMinutes,
+    drift: drift,
     CLOCK_IN_GRACE_MIN: CLOCK_IN_GRACE_MIN,
     canDo: canDo,
     priorityOf: priorityOf,
