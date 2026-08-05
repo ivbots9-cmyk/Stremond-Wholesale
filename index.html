@@ -63,6 +63,14 @@
     <span class="clock__hint" id="clock-hint"></span>
   </div>
   <div class="clock__people" id="clock-people"></div>
+
+  <!-- Музыка на виду: сотрудники не смотрят в планшет постоянно, но
+       проходят мимо. Строка «чья очередь» должна читаться издалека. -->
+  <div class="music" id="music" hidden>
+    <span class="music__note">♪</span>
+    <span class="music__turn" id="music-turn"></span>
+    <div class="music__links" id="music-links"></div>
+  </div>
 </section>
 
 <div class="alerts" id="alerts"></div>
@@ -98,6 +106,10 @@
     <p class="muted" id="who-state">—</p>
 
     <div class="who__act" id="who-actions"></div>
+
+    <!-- Задачи человека здесь же: отметился — и сразу видит, что делать,
+         не выискивая свою колонку на общей доске. -->
+    <div class="who__tasks" id="who-tasks" hidden></div>
 
     <!-- Музыка стоит здесь, а не на общем экране: сотрудники не смотрят
          на планшет постоянно, а это окно они открывают сами — момент,

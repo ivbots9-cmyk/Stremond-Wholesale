@@ -673,7 +673,7 @@ check('отметился — на смене, и время нажатия со
   var at = '2026-08-05T09:34:12.000Z';
 
   P.clockIn(day, kris.id, at);
-  assert.strictEqual(day.attendance[kris.id].in, at, 'момент нажатия округлять нельзя — он идёт в табель');
+  assert.strictEqual(P.firstIn(day.attendance[kris.id]), at, 'момент нажатия округлять нельзя — он идёт в табель');
   var late = P.hhmm(kris.shift.start) + P.CLOCK_IN_GRACE_MIN + 5;
   assert.strictEqual(P.attendanceOf(cfg, day, kris, late), 'in');
   assert.ok(P.isAvailable(kris, day, late, cfg));
@@ -683,7 +683,8 @@ check('второе нажатие «пришёл» не переписывае�
   var day = P.emptyDay('2026-08-05');
   P.clockIn(day, 'kris', '2026-08-05T09:30:00.000Z');
   P.clockIn(day, 'kris', '2026-08-05T11:00:00.000Z');
-  assert.strictEqual(day.attendance.kris.in, '2026-08-05T09:30:00.000Z');
+  assert.strictEqual(P.sessionsOf(day.attendance.kris).length, 1, 'вторая смена начаться не должна');
+  assert.strictEqual(P.firstIn(day.attendance.kris), '2026-08-05T09:30:00.000Z');
 });
 
 check('закрыл смену — из плана выпадает, отработанное считается', function () {
@@ -849,8 +850,9 @@ check('второй перерыв подряд не начинается', func
   P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
   P.breakStart(day, 'kris', '2026-08-05T11:00:00.000Z');
   P.breakStart(day, 'kris', '2026-08-05T11:05:00.000Z');
-  assert.strictEqual(day.attendance.kris.breaks.length, 1);
-  assert.strictEqual(day.attendance.kris.breaks[0].start, '2026-08-05T11:00:00.000Z');
+  var ses = P.sessionsOf(day.attendance.kris)[0];
+  assert.strictEqual(ses.breaks.length, 1);
+  assert.strictEqual(ses.breaks[0].start, '2026-08-05T11:00:00.000Z');
 });
 
 check('ушёл, не закрыв перерыв — перерыв закрывается уходом', function () {
@@ -859,7 +861,7 @@ check('ушёл, не закрыв перерыв — перерыв закры�
   P.breakStart(day, 'kris', '2026-08-05T16:00:00.000Z');
   P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
 
-  assert.strictEqual(day.attendance.kris.breaks[0].end, '2026-08-05T17:00:00.000Z',
+  assert.strictEqual(P.sessionsOf(day.attendance.kris)[0].breaks[0].end, '2026-08-05T17:00:00.000Z',
     'иначе перерыв тянулся бы вечно');
   assert.strictEqual(P.workedMinutes(day, 'kris'), 480, 'перерыв оплачивается — вычитать нечего');
   assert.strictEqual(P.workedMinutes(day, 'kris', false), 420,
@@ -1091,6 +1093,66 @@ check('без ссылок и без людей очереди нет, а не �
   P.clockIn(day, cfg.staff[0].id, '2026-08-05T09:00:00.000Z');
   assert.strictEqual(P.musicTurn(cfg, day, '2026-08-05T10:00:00.000Z'), null,
     'человек есть, ссылки нет — очередь не из чего строить');
+});
+
+check('после ухода можно вернуться в работу', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];
+
+  P.clockIn(day, kris.id, '2026-08-05T09:00:00.000Z');
+  P.clockOut(day, kris.id, '2026-08-05T09:05:00.000Z');     // нажали случайно
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, 10 * 60), 'out');
+
+  P.clockIn(day, kris.id, '2026-08-05T09:06:00.000Z');
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, 10 * 60), 'in', 'вернулся на смену');
+  assert.ok(P.isAvailable(kris, day, 10 * 60, cfg), 'и работа снова на него планируется');
+  assert.strictEqual(P.sessionsOf(day.attendance[kris.id]).length, 2);
+});
+
+check('часы за день складываются из всех отрезков', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T12:00:00.000Z');      // 3 ч
+  P.clockIn(day, 'kris', '2026-08-05T13:00:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');      // 4 ч
+
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 420, 'час между отрезками не оплачивается');
+});
+
+check('первый приход за день остаётся первым после возврата', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:00:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T09:05:00.000Z');
+  P.clockIn(day, 'kris', '2026-08-05T09:06:00.000Z');
+  assert.strictEqual(P.firstIn(day.attendance.kris), '2026-08-05T09:00:00.000Z',
+    'от него считается очередь музыки — он не должен прыгать');
+});
+
+check('записи старого вида читаются как один отрезок', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  /* Так выглядели данные до появления нескольких отрезков за день. */
+  day.attendance = {
+    kris: { in: '2026-08-05T09:00:00.000Z', out: '2026-08-05T17:00:00.000Z', breaks: [
+      { start: '2026-08-05T12:00:00.000Z', end: '2026-08-05T12:30:00.000Z' }
+    ] }
+  };
+
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 480);
+  assert.strictEqual(P.breakMinutes(day, 'kris'), 30);
+  assert.strictEqual(P.attendanceOf(cfg, day, cfg.staff[0], 18 * 60), 'out');
+});
+
+check('возврат после ухода не ломает старую запись', function () {
+  var day = P.emptyDay('2026-08-05');
+  day.attendance = { kris: { in: '2026-08-05T09:00:00.000Z', out: '2026-08-05T12:00:00.000Z', breaks: [] } };
+
+  P.clockIn(day, 'kris', '2026-08-05T13:00:00.000Z');
+  P.clockOut(day, 'kris', '2026-08-05T17:00:00.000Z');
+
+  assert.strictEqual(P.sessionsOf(day.attendance.kris).length, 2);
+  assert.strictEqual(P.workedMinutes(day, 'kris'), 420, '3 ч + 4 ч');
 });
 
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');

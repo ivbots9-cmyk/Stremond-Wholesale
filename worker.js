@@ -425,38 +425,67 @@ async function postAttendance(request, env, url) {
   const now = new Date().toISOString();
   const rec = day.attendance[staffId];
 
-  /* Незакрытый перерыв, если он есть. */
+  /*
+   * Отрезков работы за день может быть несколько: человек закрыл смену
+   * случайно и вернулся, или уходил и пришёл снова. Старая форма
+   * { in, out, breaks } читается как один отрезок — записи, сделанные до
+   * этого изменения, не теряются.
+   */
+  const sessionsOf = (r) => {
+    if (!r) return [];
+    if (Array.isArray(r.sessions)) return r.sessions;
+    if (r.in) return [{ in: r.in, out: r.out || null, breaks: r.breaks || [] }];
+    return [];
+  };
+  const openSession = (r) => {
+    const list = sessionsOf(r);
+    const last = list[list.length - 1];
+    return last && !last.out ? last : null;
+  };
   const openBreak = (r) => {
-    const list = (r && r.breaks) || [];
+    const ses = openSession(r);
+    const list = (ses && ses.breaks) || [];
     const last = list[list.length - 1];
     return last && !last.end ? last : null;
   };
+  const ensure = () => {
+    let r = day.attendance[staffId];
+    if (!r) r = day.attendance[staffId] = { sessions: [] };
+    if (!Array.isArray(r.sessions)) {
+      r.sessions = sessionsOf(r);
+      delete r.in; delete r.out; delete r.breaks;
+    }
+    return r;
+  };
 
   if (action === 'in') {
-    /* Повторное нажатие не переписывает приход: верным остаётся первое. */
-    if (rec && rec.in && !rec.out) return json({ ok: true, attendance: rec, version: doc.version });
-    day.attendance[staffId] = { in: (rec && rec.in) || now, out: null, breaks: (rec && rec.breaks) || [] };
-    /* Пришёл — значит уже не «отмечен отсутствующим». */
-    day.absent = (day.absent || []).filter((id) => id !== staffId);
+    const r = ensure();
+    /* Открытый отрезок уже есть — повторное нажатие не начинает второй
+       и не переписывает время первого. */
+    if (!openSession(r)) {
+      r.sessions.push({ in: now, out: null, breaks: [] });
+      /* Пришёл — значит уже не «отмечен отсутствующим». */
+      day.absent = (day.absent || []).filter((id) => id !== staffId);
+    }
   } else if (action === 'break-start') {
-    if (!rec || !rec.in || rec.out) return json({ error: 'not clocked in' }, 409);
+    const ses = openSession(rec);
+    if (!ses) return json({ error: 'not clocked in' }, 409);
     if (!openBreak(rec)) {
-      rec.breaks = rec.breaks || [];
-      rec.breaks.push({ start: now, end: null });
+      ses.breaks = ses.breaks || [];
+      ses.breaks.push({ start: now, end: null });
     }
   } else if (action === 'break-end') {
     const open = openBreak(rec);
     if (!open) return json({ error: 'not on break' }, 409);
     open.end = now;
   } else {
-    if (!rec || !rec.in) return json({ error: 'not clocked in' }, 409);
-    if (!rec.out) {
-      /* Ушёл, не закрыв перерыв: закрываем тем же моментом, иначе
-         перерыв тянулся бы вечно и съедал оплаченные часы. */
-      const open = openBreak(rec);
-      if (open) open.end = now;
-      rec.out = now;
-    }
+    const ses = openSession(rec);
+    if (!ses) return json({ error: 'not clocked in' }, 409);
+    /* Ушёл, не закрыв перерыв: закрываем тем же моментом, иначе перерыв
+       тянулся бы вечно. */
+    const open = openBreak(rec);
+    if (open) open.end = now;
+    ses.out = now;
   }
 
   /* Версию не проверяем — по той же причине, что и у отметки выполнения:
