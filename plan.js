@@ -665,8 +665,9 @@
     if ((day.absent || []).indexOf(staff.id) >= 0) return 'absent';
 
     var rec = (day.attendance || {})[staff.id];
-    if (rec && rec.out) return 'out';
-    if (rec && rec.in) return openBreak(rec) ? 'break' : 'in';
+    var list = sessionsOf(rec);
+    if (openSession(rec)) return openBreak(rec) ? 'break' : 'in';
+    if (list.length) return 'out';
 
     /* Без часов судить о неявке нельзя — считаем, что человека ждём. */
     if (nowMin == null) return 'expected';
@@ -689,11 +690,54 @@
     return st === 'in' || st === 'break' || st === 'expected';
   }
 
-  /* Незакрытый перерыв, если он есть. */
+  /*
+   * Отрезки работы за день. Их может быть несколько: человек закрыл
+   * смену случайно и вернулся, или уходил и пришёл снова. Одной пары
+   * in/out на день не хватает — второй приход затирал бы первый.
+   *
+   * Старая форма { in, out, breaks } читается как одна сессия: записи,
+   * сделанные до этого изменения, не теряются.
+   */
+  function sessionsOf(rec) {
+    if (!rec) return [];
+    if (Array.isArray(rec.sessions)) return rec.sessions;
+    if (rec.in) return [{ in: rec.in, out: rec.out || null, breaks: rec.breaks || [] }];
+    return [];
+  }
+
+  /* Открытая сессия — та, где ещё не отметили уход. */
+  function openSession(rec) {
+    var list = sessionsOf(rec);
+    var last = list[list.length - 1];
+    return last && !last.out ? last : null;
+  }
+
+  /* Первый приход за день: с него начинается отсчёт очереди музыки. */
+  function firstIn(rec) {
+    var list = sessionsOf(rec);
+    return list.length ? list[0].in : null;
+  }
+
+  /* Незакрытый перерыв внутри открытой сессии. */
   function openBreak(rec) {
-    var list = (rec && rec.breaks) || [];
+    var ses = openSession(rec);
+    var list = (ses && ses.breaks) || [];
     var last = list[list.length - 1];
     return last && !last.end ? last : null;
+  }
+
+  /* Приводим запись к форме с сессиями — один раз при первой правке. */
+  function ensureSessions(day, staffId) {
+    day.attendance = day.attendance || {};
+    var rec = day.attendance[staffId];
+    if (!rec) rec = day.attendance[staffId] = { sessions: [] };
+    if (!Array.isArray(rec.sessions)) {
+      rec.sessions = sessionsOf(rec);
+      delete rec.in;
+      delete rec.out;
+      delete rec.breaks;
+    }
+    return rec;
   }
 
   function availableStaff(config, day, nowMin) {
@@ -708,11 +752,16 @@
    * Повторное нажатие «пришёл» время прихода не переписывает: если
    * человек нажал дважды, верным остаётся первое нажатие.
    */
+  /*
+   * Приход. Если открытая сессия уже есть — ничего не делаем: повторное
+   * нажатие не должно ни начинать вторую, ни переписывать первую.
+   * Если все сессии закрыты — начинается новая. Это и есть возврат в
+   * работу после случайного (или настоящего) ухода.
+   */
   function clockIn(day, staffId, iso) {
-    day.attendance = day.attendance || {};
-    var rec = day.attendance[staffId];
-    if (rec && rec.in && !rec.out) return day;
-    day.attendance[staffId] = { in: (rec && rec.in) || iso, out: null, breaks: (rec && rec.breaks) || [] };
+    var rec = ensureSessions(day, staffId);
+    if (openSession(rec)) return day;
+    rec.sessions.push({ in: iso, out: null, breaks: [] });
     /* Пришёл — значит уже не «отмечен отсутствующим». */
     day.absent = (day.absent || []).filter(function (id) { return id !== staffId; });
     return day;
@@ -720,31 +769,30 @@
 
   function breakStart(day, staffId, iso) {
     var rec = (day.attendance || {})[staffId];
-    if (!rec || !rec.in || rec.out) return day;
+    var ses = openSession(rec);
+    if (!ses) return day;
     if (openBreak(rec)) return day;          // уже на перерыве
-    rec.breaks = rec.breaks || [];
-    rec.breaks.push({ start: iso, end: null });
+    ses.breaks = ses.breaks || [];
+    ses.breaks.push({ start: iso, end: null });
     return day;
   }
 
   function breakEnd(day, staffId, iso) {
-    var rec = (day.attendance || {})[staffId];
-    var open = openBreak(rec);
+    var open = openBreak((day.attendance || {})[staffId]);
     if (!open) return day;
     open.end = iso;
     return day;
   }
 
   function clockOut(day, staffId, iso) {
-    day.attendance = day.attendance || {};
-    var rec = day.attendance[staffId];
-    if (!rec || !rec.in) return day;
-    if (rec.out) return day;
+    var rec = (day.attendance || {})[staffId];
+    var ses = openSession(rec);
+    if (!ses) return day;
     /* Ушёл, не закрыв перерыв: перерыв заканчивается тем же моментом —
-       иначе он тянулся бы до бесконечности и съедал часы. */
+       иначе он тянулся бы до бесконечности. */
     var open = openBreak(rec);
     if (open) open.end = iso;
-    rec.out = iso;
+    ses.out = iso;
     return day;
   }
 
@@ -781,28 +829,33 @@
         var row = byStaff[staffId];
         if (!row) return;                       // человека удалили из справочника
         var rec = day.attendance[staffId];
-        if (!rec || !rec.in) return;
+        var list = sessionsOf(rec);
+        if (!list.length) return;
 
         var worked = workedMinutes(day, staffId, paid);
         var brk = Math.round(breakMinutes(day, staffId, nowIso));
 
-        if (worked == null) {
-          /* Смена не закрыта — считаем «набежало на сейчас», отдельно.
-             По тем же правилам, что и закрытая: иначе строка «уже
-             набежало» противоречила бы итогу того же дня вечером. */
-          var running = nowIso
-            ? Math.max(0, Math.round(minutesBetween(rec.in, nowIso) - (paid ? 0 : brk)))
-            : 0;
-          row.openMin += running;
-        } else {
+        /* Открытая сессия считается отдельно: платить за день, который
+           ещё не кончился, нельзя, но показать «уже набежало» — можно. */
+        var open = openSession(rec);
+        if (open && nowIso) {
+          var openBrk = (open.breaks || []).reduce(function (b, br) {
+            var end = br.end || nowIso;
+            return b + minutesBetween(br.start, end);
+          }, 0);
+          row.openMin += Math.max(0, Math.round(minutesBetween(open.in, nowIso) - (paid ? 0 : openBrk)));
+        }
+
+        if (worked != null) {
           row.workedMin += worked;
           row.closedDays++;
         }
         row.breakMin += brk;
         row.days.push({
           date: day.date,
-          in: rec.in,
-          out: rec.out || null,
+          in: list[0].in,
+          out: open ? null : list[list.length - 1].out,
+          sessions: list.length,
           breakMin: brk,
           workedMin: worked
         });
@@ -836,13 +889,12 @@
     var minutes = (config.rules && config.rules.musicTurnMin) || 120;
 
     var present = (config.staff || []).filter(function (s) {
-      var rec = (day.attendance || {})[s.id];
-      return rec && rec.in && !rec.out && s.musicUrl;
+      return s.musicUrl && openSession((day.attendance || {})[s.id]);
     });
     if (!present.length || !nowIso) return null;
 
     /* Отсчёт от первого прихода за день — это и есть начало дня по факту. */
-    var starts = present.map(function (s) { return day.attendance[s.id].in; }).sort();
+    var starts = present.map(function (s) { return firstIn(day.attendance[s.id]); }).sort();
     var anchor = starts[0];
 
     var passed = minutesBetween(anchor, nowIso);
@@ -925,11 +977,11 @@
   /* Сколько минут человек провёл на перерывах. Открытый перерыв считается
      до указанного момента — иначе на экране он бы не рос. */
   function breakMinutes(day, staffId, untilIso) {
-    var rec = (day.attendance || {})[staffId];
-    if (!rec) return 0;
-    return (rec.breaks || []).reduce(function (sum, br) {
-      var end = br.end || untilIso;
-      return end ? sum + minutesBetween(br.start, end) : sum;
+    return sessionsOf((day.attendance || {})[staffId]).reduce(function (total, ses) {
+      return total + (ses.breaks || []).reduce(function (sum, br) {
+        var end = br.end || untilIso;
+        return end ? sum + minutesBetween(br.start, end) : sum;
+      }, 0);
     }, 0);
   }
 
@@ -955,10 +1007,20 @@
    * табеле не появлялись выдуманные нули за незакончившийся день.
    */
   function workedMinutes(day, staffId, paid) {
-    var rec = (day.attendance || {})[staffId];
-    if (!rec || !rec.in || !rec.out) return null;
-    var gross = minutesBetween(rec.in, rec.out);
-    var deduct = paid === false ? breakMinutes(day, staffId) : 0;
+    var list = sessionsOf((day.attendance || {})[staffId]);
+    var closed = list.filter(function (ses) { return ses.in && ses.out; });
+    if (!closed.length) return null;
+
+    var gross = closed.reduce(function (sum, ses) {
+      return sum + minutesBetween(ses.in, ses.out);
+    }, 0);
+    var deduct = paid === false
+      ? closed.reduce(function (sum, ses) {
+        return sum + (ses.breaks || []).reduce(function (b, br) {
+          return br.end ? b + minutesBetween(br.start, br.end) : b;
+        }, 0);
+      }, 0)
+      : 0;
     return Math.max(0, Math.round(gross - deduct));
   }
 
@@ -1582,6 +1644,9 @@
     weekStart: weekStart,
     musicTurn: musicTurn,
     openBreak: openBreak,
+    sessionsOf: sessionsOf,
+    openSession: openSession,
+    firstIn: firstIn,
     clockOut: clockOut,
     workedMinutes: workedMinutes,
     markProgress: markProgress,

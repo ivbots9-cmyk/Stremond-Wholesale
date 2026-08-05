@@ -266,6 +266,72 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 .person.is-break { border-color: #f59e0b; background: #fffbeb; }
 .person.is-break .person__state { color: #b45309; font-weight: 600; }
 
+/* ───────── музыка ───────── */
+
+/*
+ * Полоса под карточками людей. Крупная строка «чья очередь» — её надо
+ * прочитать проходя мимо, а не вглядываясь; кнопки рядом, чтобы
+ * переключить не отходя.
+ */
+.music {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.music__note { font-size: 20px; color: #7c3aed; }
+.music__turn { font-size: 15px; font-weight: 600; }
+.music__turn b { color: #7c3aed; }
+.music__turn span { font-weight: 400; color: var(--ink-mute); }
+.music__links { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.music__links button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.music__links button.is-turn { border-color: #7c3aed; color: #7c3aed; }
+
+/* Задачи в окне сотрудника. */
+.who__tasks { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 4px; }
+.who__label {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin-bottom: 10px;
+}
+.who-task {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.who-task.is-done { opacity: .55; }
+.who-task__head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.who-task__head b { font-size: 15px; }
+.who-task__head .muted { font-size: 12px; margin: 0; white-space: nowrap; }
+.who-task__act { display: flex; gap: 8px; margin-top: 10px; }
+.who-task__act button {
+  flex: 1;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.who-task__act button.is-on { background: var(--ok); border-color: var(--ok); color: #fff; }
+.who-task__act button.is-active { background: #2563eb; border-color: #2563eb; color: #fff; }
+
 /* Музыка в окне сотрудника. Отделена линией: это не про смену. */
 .who__music {
   border-top: 1px solid var(--line);

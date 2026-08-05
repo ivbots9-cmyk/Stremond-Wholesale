@@ -51,7 +51,8 @@
     editingBlockId: null,
     draftConfig: null,  // копия настроек, пока открыто окно настроек
     whoStaff: null,     // чья карточка открыта в окне смены
-    hoursWeek: null     // понедельник недели, показанной в табеле
+    hoursFrom: null,    // начало периода в табеле
+    hoursTo: null       // конец периода в табеле
   };
 
   var saveTimer = null;
@@ -277,14 +278,70 @@
 
     var hint = $('clock-hint');
     if (missing && may) hint.textContent = T.t('clock.someoneMissing', { n: missing });
+
+    renderMusicBar();
   }
+
+  /*
+   * Полоса музыки под карточками. Стоит на виду, а не только в окне
+   * сотрудника: мимо планшета проходят чаще, чем открывают его, и
+   * строку «чья очередь» надо читать не останавливаясь.
+   *
+   * Кнопки — прямые переходы. Своя ссылка у того, чья очередь; рядом
+   * общие сервисы, чтобы не искать их в браузере.
+   */
+  function renderMusicBar() {
+    var box = $('music');
+    var turn = P.musicTurn(app.config, app.day, new Date().toISOString());
+    var services = (app.config.rules && app.config.rules.musicServices) || DEFAULT_SERVICES;
+
+    var line = $('music-turn');
+    var links = $('music-links');
+    links.innerHTML = '';
+    line.innerHTML = '';
+
+    if (turn) {
+      var who = el('b', null, turn.current.name);
+      line.appendChild(document.createTextNode(T.t('music.now', { name: '' })));
+      line.appendChild(who);
+      line.appendChild(el('span', null,
+        ' · ' + T.t('music.leftShort', { left: P.human(turn.minutesLeft) }) +
+        (turn.queue.length > 1 ? ' · ' + T.t('music.nextShort', { name: turn.next.name }) : '')));
+
+      var mine = el('button', 'is-turn', turn.current.name);
+      mine.type = 'button';
+      mine.onclick = function () { window.open(turn.current.musicUrl, '_blank', 'noopener'); };
+      links.appendChild(mine);
+    } else {
+      line.appendChild(el('span', null, T.t('music.nobody')));
+    }
+
+    services.forEach(function (svc) {
+      if (!svc.url) return;
+      var b = el('button', '', svc.title);
+      b.type = 'button';
+      b.onclick = function () { window.open(svc.url, '_blank', 'noopener'); };
+      links.appendChild(b);
+    });
+
+    box.hidden = !turn && !services.length;
+  }
+
+  /* Сервисы, которыми они пользуются. Правятся в настройках. */
+  var DEFAULT_SERVICES = [
+    { title: 'Spotify', url: 'https://open.spotify.com' },
+    { title: 'YouTube', url: 'https://www.youtube.com' },
+    { title: 'Radio', url: 'https://radio.garden' }
+  ];
 
   function clockState(staff, st, rec) {
     if (st === 'vacation') return T.t('clock.vacation');
     if (st === 'absent') return T.t('clock.absent');
     if (st === 'noshow') return T.t('clock.noshow');
     if (st === 'expected') return T.t('clock.expected', { time: P.fmt(P.hhmm(shiftStartOf(staff))) });
-    if (st === 'in') return T.t('clock.in', { time: hhmmOf(rec.in) });
+    var list = P.sessionsOf(rec);
+    var open = P.openSession(rec);
+    if (st === 'in') return T.t('clock.in', { time: hhmmOf(open && open.in) });
     if (st === 'break') {
       var open = P.openBreak(rec);
       return T.t('who.onBreakSince', {
@@ -297,8 +354,8 @@
       var brk = P.breakMinutes(app.day, staff.id);
       var base = {
         worked: worked == null ? '—' : P.human(worked),
-        from: hhmmOf(rec.in),
-        to: hhmmOf(rec.out)
+        from: hhmmOf(list.length && list[0].in),
+        to: hhmmOf(list.length && list[list.length - 1].out)
       };
       /* Перерыв показываем, только если он был: иначе строка шумит. */
       if (!brk) return T.t('clock.out', base);
@@ -369,9 +426,14 @@
       act('is-out', 'who.clockOut', 'out');
     } else if (st === 'expected' || st === 'noshow') {
       act('', 'who.checkIn', 'in');
+    } else if (st === 'out') {
+      /* Уход можно нажать случайно, и человек не должен остаться без
+         возможности вернуться. Новый отрезок, а не переписанный старый:
+         отработанное за первую половину дня сохраняется. */
+      act('', 'who.checkInAgain', 'in');
     }
-    /* Смена закрыта — открывать нечего: день человека уже посчитан. */
 
+    renderWhoTasks(staff, st);
     renderMusic(staff);
     openModal('who-modal');
   }
@@ -416,6 +478,63 @@
 
     /* Очереди нет (никто ещё не отметился), но своя ссылка есть. */
     box.appendChild(musicButton(staff, true));
+  }
+
+  /*
+   * Задачи человека прямо в его окне. Это единственный экран, который
+   * сотрудник открывает сам: отметился — и сразу видит, что делать, не
+   * выискивая свою колонку на общей доске.
+   */
+  function renderWhoTasks(staff, st) {
+    var box = $('who-tasks');
+    box.innerHTML = '';
+
+    /* Не на смене — задач не показываем: сначала отметься. */
+    if (st !== 'in' && st !== 'break') { box.hidden = true; return; }
+
+    var lane = (app.view.lanes || []).filter(function (l) { return l.staff.id === staff.id; })[0];
+    var items = (lane && lane.items) || [];
+    box.hidden = false;
+
+    box.appendChild(el('div', 'who__label', T.t('who.yourTasks')));
+
+    if (!items.length) {
+      box.appendChild(el('p', 'muted', T.t('lane.noTasks')));
+      return;
+    }
+
+    items.forEach(function (item) {
+      var b = item.block;
+      var row = el('div', 'who-task' + (b.status === 'done' ? ' is-done' : ''));
+
+      var head = el('div', 'who-task__head');
+      head.appendChild(el('b', null, P.blockTitle(app.config, b)));
+      head.appendChild(el('span', 'muted',
+        item.start == null ? T.t('task.noVolume') : P.fmt(item.start) + '–' + P.fmt(item.end)));
+      row.appendChild(head);
+
+      var act = el('div', 'who-task__act');
+
+      var start = el('button', b.status === 'active' ? 'is-active' : '', T.t('task.start'));
+      start.type = 'button';
+      start.onclick = function () {
+        setStatus(b, b.status === 'active' ? 'planned' : 'active');
+        renderWhoTasks(staff, st);
+      };
+      act.appendChild(start);
+
+      var done = el('button', b.status === 'done' ? 'is-on' : '',
+        T.t(b.status === 'done' ? 'task.isDone' : 'task.done'));
+      done.type = 'button';
+      done.onclick = function () {
+        setStatus(b, b.status === 'done' ? 'planned' : 'done');
+        renderWhoTasks(staff, st);
+      };
+      act.appendChild(done);
+
+      row.appendChild(act);
+      box.appendChild(row);
+    });
   }
 
   function musicButton(staff, isMine) {
@@ -556,11 +675,27 @@
     });
   }
 
+  /*
+   * Движок отдаёт предупреждения кодом и параметрами, строку собирает
+   * экран. Время приходит числом минут — форматируем здесь же, чтобы
+   * оно слушалось языка.
+   */
+  function warningText(w) {
+    return T.t('warn.' + w.code, {
+      name: w.name,
+      title: w.title,
+      detail: w.detail === 'noSkill' ? T.t('warn.noSkill')
+        : w.detail === 'nobody' ? T.t('warn.nobodyShort')
+          : w.detail,
+      time: w.minutes == null ? '' : P.human(w.minutes)
+    });
+  }
+
   function renderAlerts() {
     var box = $('alerts');
     box.innerHTML = '';
     (app.view.warnings || []).forEach(function (w) {
-      box.appendChild(el('div', 'alert alert--' + w.level, w.text));
+      box.appendChild(el('div', 'alert alert--' + w.level, warningText(w)));
     });
   }
 
@@ -1726,32 +1861,74 @@
    * чтений; для четырёх человек это дешевле, чем заводить отдельный
    * серверный запрос с выборкой по диапазону.
    */
+  /*
+   * Период табеля. Неделя — то, что нужно почти всегда, поэтому она
+   * открывается по умолчанию и листается стрелками. Но бухгалтеру
+   * иногда нужен «с 3-го по 17-е», и заставлять его складывать две
+   * недели в уме неправильно — поэтому даты можно задать вручную.
+   */
+  function hoursRange() {
+    if (!app.hoursFrom) {
+      app.hoursFrom = P.weekStart(P.todayISO());
+      app.hoursTo = P.shiftISO(app.hoursFrom, 6);
+    }
+    return { from: app.hoursFrom, to: app.hoursTo };
+  }
+
+  function setHoursWeek(monday) {
+    app.hoursFrom = monday;
+    app.hoursTo = P.shiftISO(monday, 6);
+    renderHoursTab();
+  }
+
   function renderHoursTab() {
     var box = $('tab-hours');
     box.innerHTML = '';
-    app.hoursWeek = app.hoursWeek || P.weekStart(P.todayISO());
+    var range = hoursRange();
 
     box.appendChild(el('p', 'muted', T.t('hours.intro')));
 
     var nav = el('div', 'hours__week');
+
     var prev = el('button', 'btn btn--sm btn--ghost', '‹');
     prev.type = 'button';
     prev.title = T.t('hours.prev');
-    prev.onclick = function () { app.hoursWeek = P.shiftISO(app.hoursWeek, -7); renderHoursTab(); };
+    prev.onclick = function () { setHoursWeek(P.shiftISO(range.from, -7)); };
+    nav.appendChild(prev);
+
+    /* Обе даты правятся руками — это и есть «произвольный период». */
+    var from = document.createElement('input');
+    from.type = 'date';
+    from.value = range.from;
+    from.onchange = function () {
+      app.hoursFrom = from.value || range.from;
+      if (app.hoursTo < app.hoursFrom) app.hoursTo = app.hoursFrom;
+      renderHoursTab();
+    };
+    nav.appendChild(from);
+    nav.appendChild(el('span', 'muted', '—'));
+
+    var to = document.createElement('input');
+    to.type = 'date';
+    to.value = range.to;
+    to.onchange = function () {
+      app.hoursTo = to.value || range.to;
+      if (app.hoursTo < app.hoursFrom) app.hoursFrom = app.hoursTo;
+      renderHoursTab();
+    };
+    nav.appendChild(to);
 
     var next = el('button', 'btn btn--sm btn--ghost', '›');
     next.type = 'button';
     next.title = T.t('hours.next');
-    next.onclick = function () { app.hoursWeek = P.shiftISO(app.hoursWeek, 7); renderHoursTab(); };
+    next.onclick = function () { setHoursWeek(P.shiftISO(range.from, 7)); };
+    nav.appendChild(next);
 
     var now = el('button', 'btn btn--sm btn--ghost', T.t('hours.thisWeek'));
     now.type = 'button';
-    now.onclick = function () { app.hoursWeek = P.weekStart(P.todayISO()); renderHoursTab(); };
-
-    nav.appendChild(prev);
-    nav.appendChild(el('span', 'hours__total', T.t('hours.week', { date: P.humanDate(app.hoursWeek) })));
-    nav.appendChild(next);
+    now.onclick = function () { setHoursWeek(P.weekStart(P.todayISO())); };
     nav.appendChild(now);
+
     box.appendChild(nav);
 
     var body = el('div');
@@ -1759,21 +1936,26 @@
     box.appendChild(body);
 
     var dates = [];
-    for (var i = 0; i < 7; i++) dates.push(P.shiftISO(app.hoursWeek, i));
+    for (var d = range.from; d <= range.to; d = P.shiftISO(d, 1)) {
+      dates.push(d);
+      /* Предохранитель: случайно выставленный «с 2020 по 2030» не должен
+         превращаться в тысячи запросов. */
+      if (dates.length > 92) break;
+    }
 
-    Promise.all(dates.map(function (d) {
+    Promise.all(dates.map(function (dd) {
       /* Сегодняшний день уже в памяти — лишний запрос за ним не нужен. */
-      if (d === app.date && app.day) return Promise.resolve(app.day);
-      return S.loadDay(d);
+      if (dd === app.date && app.day) return Promise.resolve(app.day);
+      return S.loadDay(dd);
     })).then(function (days) {
-      renderHoursTable(body, days.filter(Boolean));
+      renderHoursTable(body, days.filter(Boolean), range);
     }).catch(function (e) {
       body.innerHTML = '';
       body.appendChild(el('p', 'err', String(e.message || e)));
     });
   }
 
-  function renderHoursTable(body, days) {
+  function renderHoursTable(body, days, range) {
     body.innerHTML = '';
     var rows = P.timesheet(app.config, days, new Date().toISOString());
     var withData = rows.filter(function (r) { return r.days.length; });
@@ -1845,7 +2027,7 @@
     var copy = el('button', 'btn btn--sm btn--ghost', T.t('hours.copy'));
     copy.type = 'button';
     copy.style.marginTop = '12px';
-    copy.onclick = function () { copyTimesheet(withData); };
+    copy.onclick = function () { copyTimesheet(withData, range); };
     body.appendChild(copy);
   }
 
@@ -1857,11 +2039,33 @@
    * Выгрузка для бухгалтера. Обычный текст, разделённый табуляцией:
    * вставляется в любую таблицу без возни с файлами и кодировками.
    */
-  function copyTimesheet(rows) {
-    var lines = [[T.t('hours.person'), T.t('hours.worked'), T.t('hours.rate'), T.t('hours.pay')].join('\t')];
+  function copyTimesheet(rows, range) {
+    /* Первой строкой — период. Без него таблица в письме бухгалтеру
+       ничего не значит: часы без дат не проверить. */
+    var lines = [
+      T.t('hours.period', { from: range.from, to: range.to }),
+      '',
+      [T.t('hours.person'), T.t('hours.days'), T.t('hours.breaks'),
+        T.t('hours.worked'), T.t('hours.rate'), T.t('hours.pay')].join('\t')
+    ];
+    var totalMin = 0;
+    var totalPay = 0;
     rows.forEach(function (r) {
-      lines.push([r.staff.name, r.hours, r.rate || '', r.rate ? r.pay : ''].join('\t'));
+      totalMin += r.workedMin;
+      totalPay += r.pay;
+      lines.push([
+        r.staff.name,
+        r.closedDays,
+        r.breakMin ? (Math.round(r.breakMin / 60 * 100) / 100) : 0,
+        r.hours,
+        r.rate || '',
+        r.rate ? r.pay : ''
+      ].join('\t'));
     });
+    lines.push([T.t('hours.total'), '', '', Math.round(totalMin / 60 * 100) / 100, '',
+      Math.round(totalPay * 100) / 100].join('\t'));
+    lines.push('');
+    lines.push(T.t(P.paidBreaks(app.config) ? 'hours.paid' : 'hours.unpaid'));
     var text = lines.join('\n');
 
     if (navigator.clipboard && navigator.clipboard.writeText) {

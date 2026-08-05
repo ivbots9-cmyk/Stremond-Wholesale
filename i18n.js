@@ -285,6 +285,20 @@
       'music.turnLength': 'Music turn, minutes',
       'music.turnLengthHint': 'How long one person\u2019s turn lasts before it passes on. Only people who are clocked in take part.',
 
+      'warn.noSkill': 'outside their skills',
+      'warn.nobodyShort': 'nobody available',
+
+      'who.checkInAgain': 'Back to work',
+      'who.yourTasks': 'Your tasks today',
+
+      'music.now': 'Music: {name}',
+      'music.leftShort': '{left} left',
+      'music.nextShort': 'then {name}',
+      'music.nobody': 'Music: nobody\u2019s turn yet',
+      'music.services': 'Quick links',
+
+      'hours.period': 'Timesheet {from} — {to}',
+
       'lang.switch': 'Русский',
       'lang.switchHint': 'Switch language'
     },
@@ -546,6 +560,20 @@
       'music.linkHint': 'Радио, плейлист, канал на YouTube — что человек слушает. Откроется в новой вкладке, план останется на месте.',
       'music.turnLength': 'Очередь музыки, минут',
       'music.turnLengthHint': 'Сколько длится очередь одного человека, прежде чем перейти дальше. Участвуют только те, кто отметился на смене.',
+
+      'warn.noSkill': 'задача вне навыков',
+      'warn.nobodyShort': 'некому передать',
+
+      'who.checkInAgain': 'Вернуться в работу',
+      'who.yourTasks': 'Твои задачи на сегодня',
+
+      'music.now': 'Музыка: {name}',
+      'music.leftShort': 'осталось {left}',
+      'music.nextShort': 'дальше {name}',
+      'music.nobody': 'Музыка: очередь ещё не началась',
+      'music.services': 'Быстрые ссылки',
+
+      'hours.period': 'Табель {from} — {to}',
 
       'lang.switch': 'English',
       'lang.switchHint': 'Сменить язык'

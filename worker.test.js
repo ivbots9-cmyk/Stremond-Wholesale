@@ -441,9 +441,10 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     assert.strictEqual(res.status, 200);
 
     var saved = JSON.parse(state.docs['day:' + DAY].body);
-    var at = new Date(saved.attendance.toni.in).getTime();
-    assert.ok(at >= before, 'время должно быть серверное, а не из тела запроса');
-    assert.strictEqual(saved.attendance.toni.out, null);
+    var ses = saved.attendance.toni.sessions;
+    assert.strictEqual(ses.length, 1);
+    assert.ok(new Date(ses[0].in).getTime() >= before, 'время должно быть серверное, а не из тела запроса');
+    assert.strictEqual(ses[0].out, null);
   });
 
   await check('гость отметиться не может', async function () {
@@ -482,11 +483,11 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
 
     await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
-    var first = JSON.parse(state.docs['day:' + DAY].body).attendance.toni.in;
+    var first = JSON.parse(state.docs['day:' + DAY].body).attendance.toni.sessions[0].in;
 
     await new Promise(function (r) { setTimeout(r, 5); });
     await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
-    var second = JSON.parse(state.docs['day:' + DAY].body).attendance.toni.in;
+    var second = JSON.parse(state.docs['day:' + DAY].body).attendance.toni.sessions[0].in;
     assert.strictEqual(second, first);
   });
 
@@ -536,13 +537,14 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-start' }, tablet), env);
     assert.strictEqual(res.status, 200);
     var saved = JSON.parse(state.docs['day:' + DAY].body);
-    assert.strictEqual(saved.attendance.toni.breaks.length, 1);
-    assert.ok(saved.attendance.toni.breaks[0].start, 'начало перерыва должно быть записано');
-    assert.strictEqual(saved.attendance.toni.breaks[0].end, null);
+    var brk = saved.attendance.toni.sessions[0].breaks;
+    assert.strictEqual(brk.length, 1);
+    assert.ok(brk[0].start, 'начало перерыва должно быть записано');
+    assert.strictEqual(brk[0].end, null);
 
     await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-end' }, tablet), env);
     saved = JSON.parse(state.docs['day:' + DAY].body);
-    assert.ok(saved.attendance.toni.breaks[0].end, 'конец перерыва должен быть записан');
+    assert.ok(saved.attendance.toni.sessions[0].breaks[0].end, 'конец перерыва должен быть записан');
   });
 
   await check('перерыв без прихода отбивается', async function () {
@@ -573,9 +575,9 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'break-start' }, tablet), env);
     await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'out' }, tablet), env);
 
-    var rec = JSON.parse(state.docs['day:' + DAY].body).attendance.toni;
-    assert.ok(rec.out, 'смена закрыта');
-    assert.ok(rec.breaks[0].end, 'перерыв не должен остаться открытым — иначе он съест часы');
+    var ses = JSON.parse(state.docs['day:' + DAY].body).attendance.toni.sessions[0];
+    assert.ok(ses.out, 'смена закрыта');
+    assert.ok(ses.breaks[0].end, 'перерыв не должен остаться открытым');
   });
 
   await check('«Начал» и «Готово» пишут метки времени на сервере', async function () {
@@ -610,6 +612,41 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     var b = JSON.parse(state.docs['day:' + DAY].body).blocks[0];
     assert.strictEqual(b.startedAt, null, 'половина замера врёт убедительнее, чем его отсутствие');
     assert.strictEqual(b.doneAt, null);
+  });
+
+  await check('после ухода можно вернуться в работу', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'out' }, tablet), env);
+
+    var back = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+    assert.strictEqual(back.status, 200, 'нажали уход случайно — вернуться должно быть можно');
+
+    var rec = JSON.parse(state.docs['day:' + DAY].body).attendance.toni;
+    assert.strictEqual(rec.sessions.length, 2, 'второй отрезок, а не переписанный первый');
+    assert.ok(rec.sessions[0].out, 'первый отрезок закрыт');
+    assert.strictEqual(rec.sessions[1].out, null, 'второй открыт');
+  });
+
+  await check('записи старого вида на сервере не теряются', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+
+    /* День записан до появления нескольких отрезков. */
+    var old = JSON.parse(JSON.stringify(sampleDay));
+    old.attendance = { toni: { in: '2026-08-04T09:00:00.000Z', out: '2026-08-04T12:00:00.000Z', breaks: [] } };
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: old }, tablet), env);
+
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+
+    var rec = JSON.parse(state.docs['day:' + DAY].body).attendance.toni;
+    assert.strictEqual(rec.sessions.length, 2);
+    assert.strictEqual(rec.sessions[0].in, '2026-08-04T09:00:00.000Z', 'старый отрезок сохранён');
   });
 
   /* ---------- чтение ---------- */
