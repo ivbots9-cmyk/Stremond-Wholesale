@@ -1,0 +1,231 @@
+/*
+ * Хранилище плана. Два режима, переключение автоматическое:
+ *
+ *   'api'   — есть Worker с базой: план общий, правка с телефона видна
+ *             на планшете через несколько секунд;
+ *   'local' — Worker не отвечает (открыли файл локально, не настроили
+ *             деплой): всё живёт в localStorage этого устройства.
+ *
+ * Локальный режим нужен, чтобы страницу можно было открыть и работать
+ * с ней сразу, не дожидаясь настройки Cloudflare. Общего плана в нём
+ * нет — об этом честно написано в шапке страницы.
+ */
+(function (root) {
+  'use strict';
+
+  var LS_CONFIG = 'wh.config';
+  var LS_DAY = 'wh.day.';
+  var LS_ADMIN = 'wh.admin.until';
+
+  /* Локальный код — не защита, а замок от случайного касания: он лежит
+     в тех же настройках, которые открывает. В режиме 'api' проверка
+     идёт на сервере, и этот код не используется вовсе. */
+  var DEFAULT_LOCAL_PIN = '1234';
+
+  var state = {
+    mode: null,
+    admin: false,
+    pinSet: false,
+    configVersion: 0,
+    dayVersion: 0,
+    lastError: ''
+  };
+
+  function api(path, options) {
+    return fetch(path, Object.assign({
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }
+    }, options || {}));
+  }
+
+  function lsGet(key, fallback) {
+    try {
+      var raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (e) { return fallback; }
+  }
+
+  function lsSet(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+    catch (e) { state.lastError = 'Не удалось сохранить локально'; return false; }
+  }
+
+  /*
+   * Загрузка дня. Первый вызов заодно определяет режим: если /api/state
+   * ответил — работаем через сервер, иначе уходим в локальный режим и
+   * больше в сеть не стучимся.
+   */
+  function load(date) {
+    if (state.mode === 'local') return Promise.resolve(loadLocal(date));
+
+    return api('/api/state?date=' + encodeURIComponent(date))
+      .then(function (res) {
+        if (!res.ok && res.status !== 503) throw new Error('http ' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        if (data.error && !data.config) {
+          /* База не привязана — это ошибка настройки сервера, а не повод
+             уезжать в локальный режим: иначе правки уйдут в песок и
+             никто не заметит. */
+          if (data.error === 'no database') {
+            state.mode = 'api';
+            state.lastError = data.hint || 'База не подключена';
+            throw new Error(state.lastError);
+          }
+        }
+        state.mode = 'api';
+        state.admin = Boolean(data.admin);
+        state.pinSet = Boolean(data.pinSet);
+        state.configVersion = data.configVersion || 0;
+        state.dayVersion = data.dayVersion || 0;
+        state.lastError = '';
+        return { config: data.config, day: data.day };
+      })
+      .catch(function (e) {
+        if (state.mode === 'api') throw e;
+        state.mode = 'local';
+        return loadLocal(date);
+      });
+  }
+
+  function loadLocal(date) {
+    state.admin = Number(lsGet(LS_ADMIN, 0)) > Date.now();
+    state.pinSet = true;
+    return { config: lsGet(LS_CONFIG, null), day: lsGet(LS_DAY + date, null) };
+  }
+
+  /*
+   * Чтение и запись произвольной даты — нужно для «записать задание на
+   * завтра». Версии чужих дней держим отдельной таблицей: версия
+   * текущего дня к ним отношения не имеет, а без версии запись
+   * затирала бы то, что там уже лежит.
+   */
+  var otherVersions = {};
+
+  function loadDay(date) {
+    if (state.mode === 'local') return Promise.resolve(lsGet(LS_DAY + date, null));
+    return api('/api/state?date=' + encodeURIComponent(date))
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        otherVersions[date] = data.dayVersion || 0;
+        return data.day || null;
+      })
+      .catch(function () { return null; });
+  }
+
+  function saveDayAt(day, reason) {
+    if (state.mode === 'local') {
+      return Promise.resolve(lsSet(LS_DAY + day.date, day) ? { ok: true } : { error: 'local write failed' });
+    }
+    return api('/api/day?date=' + encodeURIComponent(day.date), {
+      method: 'PUT',
+      body: JSON.stringify({ day: day, version: otherVersions[day.date] || 0, reason: reason || '' })
+    }).then(readResult).then(function (r) {
+      if (r.version) otherVersions[day.date] = r.version;
+      return r;
+    });
+  }
+
+  function saveConfig(config) {
+    if (state.mode === 'local') {
+      return Promise.resolve(lsSet(LS_CONFIG, config) ? { ok: true } : { error: 'local write failed' });
+    }
+    return api('/api/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config: config, version: state.configVersion })
+    }).then(readResult).then(function (r) {
+      if (r.version) state.configVersion = r.version;
+      return r;
+    });
+  }
+
+  function saveDay(day, reason) {
+    if (state.mode === 'local') {
+      return Promise.resolve(lsSet(LS_DAY + day.date, day) ? { ok: true } : { error: 'local write failed' });
+    }
+    return api('/api/day?date=' + encodeURIComponent(day.date), {
+      method: 'PUT',
+      body: JSON.stringify({ day: day, version: state.dayVersion, reason: reason || '' })
+    }).then(readResult).then(function (r) {
+      if (r.version) state.dayVersion = r.version;
+      return r;
+    });
+  }
+
+  /* Отметка «начал / готово» — доступна и без прав администратора. */
+  function progress(date, blockId, status, doneQty) {
+    if (state.mode === 'local') {
+      var day = lsGet(LS_DAY + date, null);
+      if (!day || !day.blocks) return Promise.resolve({ error: 'no day' });
+      var b = day.blocks.filter(function (x) { return x.id === blockId; })[0];
+      if (!b) return Promise.resolve({ error: 'no block' });
+      b.status = status;
+      if (doneQty != null) b.doneQty = doneQty;
+      lsSet(LS_DAY + date, day);
+      return Promise.resolve({ ok: true });
+    }
+    return api('/api/progress?date=' + encodeURIComponent(date), {
+      method: 'POST',
+      body: JSON.stringify({ blockId: blockId, status: status, doneQty: doneQty })
+    }).then(readResult).then(function (r) {
+      if (r.version) state.dayVersion = r.version;
+      return r;
+    });
+  }
+
+  function login(pin) {
+    if (state.mode === 'local') {
+      var config = lsGet(LS_CONFIG, null);
+      var expected = (config && config.localPin) || DEFAULT_LOCAL_PIN;
+      if (String(pin) !== String(expected)) return Promise.resolve({ error: 'wrong pin' });
+      lsSet(LS_ADMIN, Date.now() + 12 * 3600e3);
+      state.admin = true;
+      return Promise.resolve({ ok: true });
+    }
+    return api('/api/login', { method: 'POST', body: JSON.stringify({ pin: pin }) })
+      .then(readResult)
+      .then(function (r) {
+        if (r.ok) state.admin = true;
+        return r;
+      });
+  }
+
+  function logout() {
+    state.admin = false;
+    if (state.mode === 'local') {
+      lsSet(LS_ADMIN, 0);
+      return Promise.resolve({ ok: true });
+    }
+    return api('/api/logout', { method: 'POST' }).then(readResult);
+  }
+
+  function history(limit) {
+    if (state.mode === 'local') return Promise.resolve({ ok: true, items: [] });
+    return api('/api/log?limit=' + (limit || 50)).then(readResult);
+  }
+
+  function readResult(res) {
+    return res.json()
+      .then(function (data) {
+        if (res.status === 409) return { conflict: true, data: data };
+        if (!res.ok) return { error: data.error || ('http ' + res.status), hint: data.hint };
+        return data;
+      })
+      .catch(function () { return { error: 'http ' + res.status }; });
+  }
+
+  root.WHStore = {
+    state: state,
+    load: load,
+    saveConfig: saveConfig,
+    saveDay: saveDay,
+    loadDay: loadDay,
+    saveDayAt: saveDayAt,
+    progress: progress,
+    login: login,
+    logout: logout,
+    history: history,
+    DEFAULT_LOCAL_PIN: DEFAULT_LOCAL_PIN
+  };
+})(window);

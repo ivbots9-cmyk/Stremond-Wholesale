@@ -1,0 +1,21 @@
+# Прогон тестов на каждый пуш. Тесты чистые: ни сети, ни базы, ни
+# браузера — поэтому здесь нет ни установки зависимостей, ни сервисов.
+name: Тесты
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Движок плана
+        run: node test.js
+      - name: Worker и права доступа
+        run: node worker.test.js

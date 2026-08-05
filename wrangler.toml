@@ -1,0 +1,23 @@
+# Worker плана склада: отдаёт страницу и хранит документы в своей D1.
+#
+# Деплой из корня репозитория:
+#   npx wrangler deploy 
+
+name = "warehouse-plan"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Статика плана. Всё, что не /api/*, отдаётся отсюда.
+[assets]
+directory = "."
+binding = "ASSETS"
+
+# database_id подставляется после создания базы:
+#   npx wrangler d1 create warehouse
+[[d1_databases]]
+binding = "DB"
+database_name = "warehouse"
+database_id = "ЗАМЕНИТЬ_НА_ID_ИЗ_wrangler_d1_create"
+
+# PIN администратора живёт в секретах, не здесь:
+#   npx wrangler secret put WH_PIN 

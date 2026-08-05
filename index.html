@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>План склада</title>
+<meta name="theme-color" content="#0f172a">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f172a'/><path d='M7 12h18M7 17h18M7 22h11' stroke='white' stroke-width='2.4' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="top__date">
+    <button class="nav-btn" id="prev-day" type="button" aria-label="Предыдущий день">‹</button>
+    <div class="date">
+      <b id="date-title">—</b>
+      <span id="date-sub">—</span>
+    </div>
+    <button class="nav-btn" id="next-day" type="button" aria-label="Следующий день">›</button>
+    <button class="nav-btn nav-btn--wide" id="today" type="button">Сегодня</button>
+  </div>
+
+  <div class="top__stats" id="stats"></div>
+
+  <div class="top__act">
+    <span class="sync" id="sync">…</span>
+    <button class="btn btn--ghost" id="admin-toggle" type="button">Правки</button>
+    <button class="btn btn--ghost" id="setup-open" type="button" hidden>Настройки</button>
+  </div>
+</header>
+
+<!-- Панель управления днём. Видна только в режиме правок. -->
+<section class="bar" id="bar" hidden>
+  <div class="bar__group">
+    <span class="bar__label">Кто на месте</span>
+    <div class="chips" id="presence"></div>
+  </div>
+
+  <div class="bar__group bar__group--grow">
+    <span class="bar__label">Объём на день</span>
+    <div class="volumes" id="volumes"></div>
+  </div>
+
+  <div class="bar__group">
+    <span class="bar__label">План</span>
+    <div class="bar__buttons">
+      <button class="btn btn--sm" id="jobs-open" type="button">Задание</button>
+      <button class="btn btn--sm btn--ghost" id="add-block" type="button">+ Задача</button>
+      <button class="btn btn--sm btn--ghost" id="rebuild" type="button">Собрать заново</button>
+    </div>
+  </div>
+</section>
+
+<div class="alerts" id="alerts"></div>
+
+<main class="board" id="board"></main>
+
+<footer class="foot">
+  <span id="foot-mode"></span>
+  <span id="foot-saved"></span>
+</footer>
+
+<!-- ───────── ввод PIN ───────── -->
+<div class="modal" id="pin-modal" hidden>
+  <div class="modal__box modal__box--narrow">
+    <h2>Код доступа</h2>
+    <p class="muted" id="pin-hint">Введите код, чтобы менять план.</p>
+    <input class="pin-input" id="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="••••">
+    <div class="keypad" id="keypad"></div>
+    <p class="err" id="pin-err"></p>
+    <div class="modal__act">
+      <button class="btn btn--ghost" data-close="pin-modal" type="button">Отмена</button>
+      <button class="btn" id="pin-submit" type="button">Войти</button>
+    </div>
+  </div>
+</div>
+
+<!-- ───────── карточка задачи ───────── -->
+<div class="modal" id="block-modal" hidden>
+  <div class="modal__box">
+    <h2 id="block-title">Задача</h2>
+
+    <label class="field">
+      <span>Кто делает</span>
+      <select id="block-staff"></select>
+    </label>
+
+    <label class="field">
+      <span>Что делает</span>
+      <select id="block-task"></select>
+    </label>
+
+    <div class="field">
+      <span>Товар</span>
+      <div class="row">
+        <select id="block-product"></select>
+        <select id="block-pack"></select>
+      </div>
+    </div>
+
+    <label class="field" id="field-variant">
+      <span>Цвет / вкус</span>
+      <select id="block-variant"></select>
+    </label>
+
+    <div class="field">
+      <span>Как считаем время</span>
+      <div class="seg" id="block-mode">
+        <button type="button" data-mode="time">По времени</button>
+        <button type="button" data-mode="volume">По количеству</button>
+      </div>
+      <p class="muted" id="mode-hint"></p>
+    </div>
+
+    <label class="field" id="field-duration">
+      <span>Сколько времени</span>
+      <div class="row">
+        <input id="block-duration" type="number" min="0" step="5" inputmode="numeric">
+        <span class="unit">мин</span>
+      </div>
+    </label>
+
+    <label class="field" id="field-qty">
+      <span>Количество</span>
+      <div class="row">
+        <input id="block-qty" type="number" min="0" step="1" inputmode="numeric">
+        <span class="unit" id="qty-unit">шт</span>
+      </div>
+      <p class="muted" id="qty-calc"></p>
+    </label>
+
+    <label class="field">
+      <span>Куда уходит</span>
+      <select id="block-dest"></select>
+    </label>
+
+    <label class="field">
+      <span>Начать не раньше <i class="muted">(необязательно)</i></span>
+      <input id="block-pinned" type="time" step="300">
+    </label>
+
+    <label class="field">
+      <span>Заметка</span>
+      <input id="block-note" type="text" maxlength="120" placeholder="Например: сначала клубника">
+    </label>
+
+    <div class="modal__act">
+      <button class="btn btn--danger" id="block-delete" type="button">Удалить</button>
+      <span class="spacer"></span>
+      <button class="btn btn--ghost" data-close="block-modal" type="button">Отмена</button>
+      <button class="btn" id="block-save" type="button">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ───────── задание на день ───────── -->
+<div class="modal" id="jobs-modal" hidden>
+  <div class="modal__box modal__box--wide">
+    <h2 id="jobs-title">Задание на день</h2>
+    <p class="muted">
+      Что нужно сделать — без привязки к людям. Кнопка «Распределить» раскидает это
+      по смене: важное вперёд, работу делит между людьми, дольше трёх часов подряд
+      на переборке никого не сажает.
+    </p>
+
+    <div id="jobs-list"></div>
+
+    <div class="jobs__act">
+      <button class="btn btn--sm btn--ghost" id="job-add" type="button">+ Строка</button>
+      <button class="btn btn--sm btn--ghost" id="jobs-tomorrow" type="button">Взять из завтрашнего</button>
+      <span class="spacer"></span>
+      <span class="muted" id="jobs-summary"></span>
+    </div>
+
+    <div class="modal__act">
+      <button class="btn btn--ghost" data-close="jobs-modal" type="button">Закрыть</button>
+      <span class="spacer"></span>
+      <button class="btn btn--ghost" id="jobs-copy" type="button">Записать на завтра</button>
+      <button class="btn" id="jobs-apply" type="button">Распределить по людям</button>
+    </div>
+  </div>
+</div>
+
+<!-- ───────── настройки ───────── -->
+<div class="modal" id="setup-modal" hidden>
+  <div class="modal__box modal__box--wide">
+    <div class="tabs" id="setup-tabs">
+      <button type="button" class="is-on" data-tab="templates">Шаблоны недели</button>
+      <button type="button" data-tab="norms">Нормы времени</button>
+      <button type="button" data-tab="tasks">Задачи</button>
+      <button type="button" data-tab="staff">Сотрудники</button>
+      <button type="button" data-tab="shift">Смена</button>
+      <button type="button" data-tab="log">Журнал</button>
+    </div>
+
+    <div class="tab" id="tab-templates"></div>
+    <div class="tab" id="tab-norms" hidden></div>
+    <div class="tab" id="tab-tasks" hidden></div>
+    <div class="tab" id="tab-staff" hidden></div>
+    <div class="tab" id="tab-shift" hidden></div>
+    <div class="tab" id="tab-log" hidden></div>
+
+    <div class="modal__act">
+      <button class="btn btn--ghost" id="logout" type="button">Выйти из правок</button>
+      <span class="spacer"></span>
+      <button class="btn btn--ghost" data-close="setup-modal" type="button">Закрыть</button>
+      <button class="btn" id="setup-save" type="button">Сохранить настройки</button>
+    </div>
+  </div>
+</div>
+
+<script src="plan.js"></script>
+<script src="store.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

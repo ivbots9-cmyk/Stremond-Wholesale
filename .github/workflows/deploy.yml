@@ -1,0 +1,49 @@
+# Автоматический деплой на Cloudflare при пуше в main.
+#
+# Чтобы это заработало, в репозитории нужен один секрет:
+#   Settings → Secrets and variables → Actions → New repository secret
+#   имя:  CLOUDFLARE_API_TOKEN
+#   где взять: dash.cloudflare.com → My Profile → API Tokens →
+#              Create Token → шаблон «Edit Cloudflare Workers»
+#
+# Пока секрета нет, шаг деплоя пропускается и сборка остаётся зелёной —
+# репозиторий не должен «гореть» только потому, что деплой ещё не настроен.
+
+name: Деплой
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Тесты перед деплоем: выкладывать сломанный план на склад нельзя.
+      - name: Тесты
+        run: |
+          node test.js
+          node worker.test.js
+
+      - name: Проверить, настроен ли Cloudflare
+        id: check
+        run: |
+          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN не задан — деплой пропущен."
+          fi
+
+      - name: Выложить
+        if: steps.check.outputs.ready == 'true'
+        run: npx --yes wrangler@4 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

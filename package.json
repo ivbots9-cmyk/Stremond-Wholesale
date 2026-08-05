@@ -1,0 +1,12 @@
+{
+  "name": "stremond-warehouse-plan",
+  "private": true,
+  "description": "План работы склада Stremond Wholesale: экран для планшета, распределение задания по смене.",
+  "scripts": {
+    "test": "node test.js && node worker.test.js",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

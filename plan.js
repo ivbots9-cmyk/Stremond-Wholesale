@@ -1,0 +1,1221 @@
+/*
+ * Движок плана смены. Чистые функции без DOM, сети и глобального
+ * состояния — поэтому одинаково работают в браузере (планшет на складе)
+ * и в node (warehouse/test.js).
+ *
+ * Три вещи, вокруг которых построено всё остальное.
+ *
+ * 1. Время блока считается ДВУМЯ способами, способ выбирается для
+ *    каждого блока:
+ *      'time'   — «переборка два с половиной часа». Длительность задана
+ *                 руками, количество не важно: сколько успели, столько
+ *                 успели. Обратная величина — выработка, её показываем.
+ *      'volume' — «180 пакетов». Длительность = количество × норма.
+ *
+ * 2. Норма зависит не от операции, а от товара и фасовки: Starburst
+ *    перебирается вчетверо быстрее Jolly, 5 lb фасуется дольше 2 lb.
+ *    Поэтому норма ищется от частного к общему и может иметь свою
+ *    единицу измерения — коробки для одного товара, пакеты для другого.
+ *
+ * 3. Задание на день («что нужно сделать») отделено от плана («кто это
+ *    делает»). Задание пишется одной строкой, а autoAssign() раскидывает
+ *    его по людям с учётом смен, навыков и того, что дольше трёх часов
+ *    подряд на сидячей переборке никто не сидит.
+ *
+ * Всё время внутри — минуты от полуночи (целые числа). Строки '09:30'
+ * появляются только на границе: hhmm() на входе, fmt() на выходе.
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.WHPlan = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /* ============================================================
+     Справочники
+     ============================================================ */
+
+  /* Порядок как в календаре, а не как в Date.getDay() (там неделя
+     начинается с воскресенья). index — то, что вернёт getDay(). */
+  var WEEKDAYS = [
+    { key: 'mon', index: 1, title: 'Понедельник', short: 'Пн' },
+    { key: 'tue', index: 2, title: 'Вторник', short: 'Вт' },
+    { key: 'wed', index: 3, title: 'Среда', short: 'Ср' },
+    { key: 'thu', index: 4, title: 'Четверг', short: 'Чт' },
+    { key: 'fri', index: 5, title: 'Пятница', short: 'Пт' },
+    { key: 'sat', index: 6, title: 'Суббота', short: 'Сб' },
+    { key: 'sun', index: 0, title: 'Воскресенье', short: 'Вс' }
+  ];
+
+  /*
+   * Куда уходит партия. priority здесь — то, чем жертвуют первым, когда
+   * людей не хватает: Amazon и розничные заказы режут последними,
+   * Walmart — первым.
+   */
+  var DESTINATIONS = [
+    { key: '', title: '—', priority: 2 },
+    { key: 'amazon', title: 'Amazon', priority: 1 },
+    { key: 'orders', title: 'Заказы', priority: 1 },
+    { key: 'tiktok', title: 'TikTok', priority: 2 },
+    { key: 'walmart', title: 'Walmart', priority: 3 },
+    { key: 'bulk', title: 'В балк', priority: 3 }
+  ];
+
+  var PRIORITIES = [
+    { value: 1, title: 'Критично', hint: 'должно уйти сегодня' },
+    { value: 2, title: 'Важно', hint: 'по плану на сегодня' },
+    { value: 3, title: 'Если успеем', hint: 'можно перенести' }
+  ];
+
+  var STATUSES = ['planned', 'active', 'done'];
+
+  /* ============================================================
+     Время
+     ============================================================ */
+
+  function hhmm(s) {
+    if (typeof s === 'number') return s;
+    var m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim());
+    if (!m) return 0;
+    return Number(m[1]) * 60 + Number(m[2]);
+  }
+
+  function fmt(min) {
+    var v = Math.max(0, Math.round(min));
+    var h = Math.floor(v / 60) % 24;
+    return pad(h) + ':' + pad(v % 60);
+  }
+
+  /* «2 ч 30 мин» — на планшете читается быстрее, чем «150 мин». */
+  function human(min) {
+    var v = Math.max(0, Math.round(min));
+    var h = Math.floor(v / 60);
+    var m = v % 60;
+    if (!h) return m + ' мин';
+    if (!m) return h + ' ч';
+    return h + ' ч ' + m + ' мин';
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  /*
+   * Склонение единиц: «10 коробок», а не «10 коробка». Таблица только
+   * на те единицы, что мы правда используем; для чего угодно, что
+   * заведут в настройках руками, возвращаем как есть — лучше
+   * несклонённое слово, чем угаданное неверно.
+   */
+  var PLURALS = {
+    'коробка': ['коробка', 'коробки', 'коробок'],
+    'пакет': ['пакет', 'пакета', 'пакетов'],
+    'заказ': ['заказ', 'заказа', 'заказов'],
+    'бин': ['бин', 'бина', 'бинов'],
+    'паллета': ['паллета', 'паллеты', 'паллет'],
+    'шт': ['шт', 'шт', 'шт']
+  };
+
+  function plural(n, unit) {
+    var forms = PLURALS[unit];
+    if (!forms) return unit;
+    /* Дробное число требует родительного падежа единственного числа:
+       «10,5 коробки». */
+    if (Math.round(n) !== n) return forms[1];
+    var abs = Math.abs(n) % 100;
+    var last = abs % 10;
+    if (abs > 10 && abs < 20) return forms[2];
+    if (last > 1 && last < 5) return forms[1];
+    if (last === 1) return forms[0];
+    return forms[2];
+  }
+
+  function todayISO(d) {
+    var t = d ? new Date(d) : new Date();
+    return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate());
+  }
+
+  function shiftISO(iso, days) {
+    var p = String(iso).split('-');
+    var t = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+    t.setDate(t.getDate() + days);
+    return todayISO(t);
+  }
+
+  function weekdayOf(iso) {
+    var p = String(iso).split('-');
+    var idx = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getDay();
+    for (var i = 0; i < WEEKDAYS.length; i++) {
+      if (WEEKDAYS[i].index === idx) return WEEKDAYS[i];
+    }
+    return WEEKDAYS[0];
+  }
+
+  function humanDate(iso) {
+    var months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+      'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+    var p = String(iso).split('-');
+    return Number(p[2]) + ' ' + months[Number(p[1]) - 1];
+  }
+
+  /* ============================================================
+     Идентификаторы
+     ============================================================ */
+
+  var seq = 0;
+  function uid(prefix) {
+    seq++;
+    return (prefix || 'b') + '_' + Date.now().toString(36) + seq.toString(36) +
+      Math.floor(Math.random() * 1296).toString(36);
+  }
+
+  /* ============================================================
+     Настройки по умолчанию
+     ============================================================ */
+
+  /*
+   * Смены восстановлены по выгрузке Clockify за июнь и сходятся с ней:
+   * Крис 09:30–16:50 минус 30 минут перерывов = 6 ч 50 мин, ровно его
+   * среднее по факту; Ева 10:00–16:50 = 6 ч 20 мин, тоже её среднее.
+   *
+   * ⚠ Подтверждённые нормы: переборка Starburst 4 коробки в час,
+   * переборка Jolly 10,5 пакетов в час, паллета 28 коробок (7 × 4),
+   * фасовки и размеры коробок — из таблицы склада. Нормы фасовки,
+   * силинга, укладки и заказов помечены ниже как «уточнить»: их
+   * нужно замерить. Правятся на вкладке «Нормы времени».
+   */
+  function defaultConfig() {
+    return {
+      version: 3,
+      title: 'План склада',
+
+      /* Общая смена — запасной вариант для тех, у кого не задана своя. */
+      shift: {
+        start: '09:30',
+        end: '16:50',
+        /*
+         * Перерыв не отменяет задачу, а сдвигает её конец. staffIds
+         * пустой = перерыв общий; иначе перерыв только у перечисленных.
+         * Разное время обеда — не прихоть, а способ не оставлять склад
+         * пустым: одни уходят в 13:30, другие в 14:00.
+         */
+        breaks: [
+          { title: 'Мини-брейк', start: '11:50', duration: 10, staffIds: [] },
+          { title: 'Перерыв', start: '13:30', duration: 20, staffIds: ['kris', 'aisulu'] },
+          { title: 'Перерыв', start: '14:00', duration: 20, staffIds: ['eva', 'toni'] }
+        ]
+      },
+
+      staff: [
+        { id: 'kris', name: 'Крис', color: '#c2410c', status: 'active', skills: [], shift: { start: '09:30', end: '16:50' } },
+        { id: 'aisulu', name: 'Айсулу', color: '#7c3aed', status: 'vacation', skills: [], shift: { start: '09:30', end: '16:50' } },
+        { id: 'eva', name: 'Ева', color: '#0f9d76', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } },
+        { id: 'toni', name: 'Тони', color: '#2f6fed', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } }
+      ],
+
+      /*
+       * Товары. Две разные «коробки», которые легко перепутать:
+       *   inbound — коробка от производителя, её перебирают
+       *             (Starburst 6 × 50 oz, Jolly 8 × 5 lb);
+       *   packs   — наша коробка на отгрузку, в ней bagsPerBox пакетов
+       *             готового товара.
+       * bagsPerBox: null означает «в таблице склада пусто» — такие
+       * места видно в интерфейсе, их нужно дозаполнить.
+       */
+      products: [
+        prod('starburst', 'Starburst', {
+          inbound: { perBox: 6, unitSize: '50 oz' },
+          sortable: true,
+          colors: ['Красный', 'Розовый', 'Оранжевый', 'Жёлтый'],
+          packs: [pack('1lb', '1 lb', 36, '18×12×10')]
+        }),
+        prod('jolly', 'Jolly Rancher', {
+          inbound: { perBox: 8, unitSize: '5 lb' },
+          sortable: true,
+          colors: ['Watermelon', 'Green Apple', 'Blue Raspberry', 'Grape', 'Cherry'],
+          packs: [
+            pack('1lb', '1 lb', 36, '18×12×12'),
+            pack('2lb', '2 lb', 21, '18×12×12'),
+            pack('5lb', '5 lb', null, '')
+          ]
+        }),
+        prod('jolly_grape', 'Jolly Rancher Grape (прозрачный пакет)', {
+          packs: [pack('2lb', '2 lb', 21, '18×12×10')]
+        }),
+        prod('frooties', 'Tootsie Frooties Mix', {
+          packs: [
+            pack('1lb', '1 lb', 33, '18×12×12'),
+            pack('2lb', '2 lb', 18, '18×12×12'),
+            pack('5lb', '5 lb', null, '')
+          ]
+        }),
+        prod('tootsie_pops', 'Tootsie Pops', {
+          packs: [pack('2lb', '2 lb', 17, '18×12×12')]
+        }),
+        prod('tootsie_chews', 'Tootsie Fruit Chews / Sour', {
+          packs: [pack('2lb', '2 lb', null, '20×12×12')]   // в таблице цифра зачёркнута
+        }),
+        prod('tootsie_twists', 'Tootsie Roll Twists', {
+          packs: [
+            pack('1lb', '1 lb', 36, '18×12×12'),
+            pack('2lb', '2 lb', 20, '18×12×12'),
+            pack('3lb', '3 lb', null, '20×12×12')          // в таблице пусто
+          ]
+        }),
+        prod('tootsie_long', 'Tootsie Long', {
+          packs: [pack('3lb', '3 lb', null, ''), pack('5lb', '5 lb', null, '')]
+        }),
+        prod('dumdums', 'Dum Dums Pops', {
+          packs: [
+            pack('1lb', '1 lb', 24, '20×12×12'),
+            pack('2lb', '2 lb', 24, '20×12×12')
+          ]
+        }),
+        prod('hot_tamales', 'Hot Tamales', {
+          packs: [
+            pack('10oz3', '10 oz × 3', 20, '18×12×10'),
+            pack('1lb', '1 lb', 36, '18×12×8'),
+            pack('2lb', '2 lb', 22, '18×12×8')
+          ]
+        }),
+        prod('mike_ike', 'Mike n Ike', {
+          packs: [pack('2lb', '2 lb', 21, '18×12×8')]
+        }),
+        prod('smarties', 'Smarties Candy Rolls', {
+          packs: [pack('2lb', '2 lb', 16, '18×12×12')]
+        }),
+        prod('top_pops', 'Top Pops Asst 48 ct', {
+          packs: [pack('48ct', '48 ct', 24, '17×15×9')]
+        }),
+        prod('fd_skittles', 'Freeze Dried Skittles', {
+          packs: [pack('8oz', '8 oz', 36, '18×12×12')]
+        }),
+        prod('fd_airheads', 'Freeze Dried Air Heads', {
+          packs: [pack('6oz', '6 oz', 30, '18×12×12')]
+        }),
+        prod('good_plenty', 'Good & Plenty', {
+          packs: [pack('1lb', '1 lb', 38, '18×12×8')]
+        }),
+        prod('bit_o_honey', 'Bit O Honey', {
+          packs: [pack('3lb', '3 lb', null, ''), pack('5lb', '5 lb', null, '')]
+        }),
+        prod('albanese', 'Albanese Gummies', {
+          packs: [pack('5lb', '5 lb', null, '')]
+        }),
+        prod('root_beer', 'Root Beers', {
+          packs: [pack('1lb', '1 lb', null, ''), pack('2lb', '2 lb', null, '')]
+        })
+      ],
+
+      /*
+       * Операции в том порядке, в каком товар через них проходит.
+       * sitting: работа сидя — по ней действует ограничение на то,
+       * сколько можно просидеть подряд.
+       */
+      tasks: [
+        {
+          id: 'sort', title: 'Переборка по цветам', mode: 'time', unit: 'коробка',
+          minPerUnit: 15, priority: 1, color: '#f59e0b', sitting: true,
+          byProduct: {
+            /* подтверждено: 4 коробки в час */
+            starburst: { min: 15, unit: 'коробка' },
+            /* подтверждено: 10–11 пакетов в час, берём 10,5 */
+            jolly: { min: 5.7, unit: 'пакет' }
+          }
+        },
+        {
+          id: 'pack', title: 'Фасовка (взвешивание)', mode: 'volume', unit: 'пакет',
+          minPerUnit: 1, priority: 1, color: '#16a34a',
+          byProduct: {}   // уточнить: минут на пакет по фасовкам
+        },
+        {
+          id: 'seal', title: 'Силинг', mode: 'volume', unit: 'пакет',
+          minPerUnit: 0.5, priority: 1, color: '#0ea5e9',
+          byProduct: {}   // уточнить
+        },
+        {
+          id: 'box', title: 'Укладка в коробки', mode: 'volume', unit: 'коробка',
+          minPerUnit: 5, priority: 2, color: '#0d9488', byProduct: {}   // уточнить
+        },
+        {
+          id: 'pallet', title: 'Сборка паллеты', mode: 'volume', unit: 'коробка',
+          minPerUnit: 2, priority: 2, color: '#0f766e', byProduct: {}   // уточнить
+        },
+        {
+          id: 'orders', title: 'Сборка заказов', mode: 'volume', unit: 'заказ',
+          minPerUnit: 2, priority: 1, color: '#e11d48', byProduct: {}   // уточнить
+        },
+        {
+          id: 'ship', title: 'Отгрузка', mode: 'time', unit: 'коробка',
+          minPerUnit: 2, priority: 1, color: '#334155', byProduct: {}
+        },
+        {
+          id: 'clean', title: 'Порядок на складе', mode: 'time', unit: '',
+          minPerUnit: 0, priority: 3, color: '#64748b', byProduct: {}
+        }
+      ],
+
+      /* Паллета на Amazon: 7 коробок на уровень, 4 уровня. */
+      pallet: { boxesPerLevel: 7, levels: 4 },
+
+      rules: {
+        /* Дольше этого никто не сидит подряд на переборке — после
+           этого система ставит другую работу. Ограничение помечено
+           флагом sitting и сейчас стоит только на переборке: именно
+           она сидячая и выматывающая. */
+        maxSittingStreak: 180,
+        /* Свободное время в конце смены заполняем переборкой: если
+           заданий больше нет, готовят балк на завтра. */
+        fillTask: 'sort'
+      },
+
+      /*
+       * Шаблон недели. Это только «скелет дня»; что именно фасовать,
+       * приезжает из задания на день.
+       */
+      templates: {
+        mon: [
+          tpl('kris', 'orders', 'volume', { dest: 'orders' }),
+          tpl('eva', 'orders', 'volume', { dest: 'orders' }),
+          tpl('kris', 'sort', 'time', { productId: 'starburst', duration: 60, dest: 'bulk' })
+        ],
+        tue: [
+          tpl('kris', 'sort', 'time', { productId: 'starburst', duration: 150, dest: 'bulk' }),
+          tpl('eva', 'sort', 'time', { productId: 'jolly', duration: 150, dest: 'bulk' }),
+          tpl('toni', 'pack', 'volume', { productId: 'frooties', packSize: '2lb', dest: 'tiktok' }),
+          tpl('kris', 'seal', 'volume', { productId: 'frooties', packSize: '2lb', dest: 'tiktok' }),
+          tpl('eva', 'box', 'volume', { productId: 'frooties', packSize: '2lb', dest: 'tiktok' })
+        ],
+        wed: [
+          tpl('kris', 'sort', 'time', { productId: 'starburst', duration: 150, dest: 'bulk' }),
+          tpl('eva', 'sort', 'time', { productId: 'jolly', duration: 150, dest: 'bulk' }),
+          tpl('toni', 'pack', 'volume', { productId: 'jolly', packSize: '2lb', dest: 'amazon' }),
+          tpl('kris', 'seal', 'volume', { productId: 'jolly', packSize: '2lb', dest: 'amazon' }),
+          tpl('eva', 'box', 'volume', { productId: 'jolly', packSize: '2lb', dest: 'amazon' })
+        ],
+        thu: [
+          tpl('kris', 'sort', 'time', { productId: 'starburst', duration: 150, dest: 'bulk' }),
+          tpl('eva', 'sort', 'time', { productId: 'jolly', duration: 150, dest: 'bulk' }),
+          tpl('toni', 'pack', 'volume', { productId: 'starburst', packSize: '1lb', dest: 'amazon' }),
+          tpl('kris', 'seal', 'volume', { productId: 'starburst', packSize: '1lb', dest: 'amazon' }),
+          tpl('eva', 'pallet', 'volume', { dest: 'amazon' })
+        ],
+        fri: [
+          tpl('kris', 'orders', 'volume', { dest: 'orders' }),
+          tpl('eva', 'pack', 'volume', { productId: 'frooties', packSize: '2lb', dest: 'tiktok' }),
+          tpl('toni', 'seal', 'volume', { productId: 'frooties', packSize: '2lb', dest: 'tiktok' }),
+          tpl('kris', 'pallet', 'volume', { dest: 'amazon' }),
+          tpl('eva', 'ship', 'time', { duration: 60, dest: 'amazon' })
+        ],
+        sat: [],
+        sun: []
+      }
+    };
+  }
+
+  function prod(id, title, extra) {
+    var p = {
+      id: id, title: title, colors: [], sortable: false,
+      inbound: null, packs: []
+    };
+    for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) p[k] = extra[k];
+    return p;
+  }
+
+  function pack(id, title, bagsPerBox, box) {
+    return { id: id, title: title, bagsPerBox: bagsPerBox, box: box || '' };
+  }
+
+  function tpl(staffId, taskId, mode, extra) {
+    var b = {
+      id: uid('t'),
+      staffId: staffId,
+      taskId: taskId,
+      mode: mode,
+      duration: 60,
+      share: 1,
+      productId: '',
+      packSize: null,
+      variant: '',
+      dest: '',
+      note: '',
+      pinnedStart: null
+    };
+    for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) b[k] = extra[k];
+    return b;
+  }
+
+  /* ============================================================
+     День
+     ============================================================ */
+
+  /*
+   * Пустой день. blocks === null отличает «день не открывали» от
+   * «день намеренно очистили» ([]).
+   *
+   * jobs — задание на день: что нужно сделать, без привязки к людям.
+   * Его пишут накануне, а autoAssign() превращает в blocks.
+   */
+  function emptyDay(date) {
+    return {
+      date: date,
+      blocks: null,
+      jobs: [],
+      absent: [],
+      volumes: {},
+      note: '',
+      updatedAt: null
+    };
+  }
+
+  function newJob(extra) {
+    var j = {
+      id: uid('j'),
+      taskId: 'pack',
+      productId: '',
+      packSize: null,
+      variant: '',
+      mode: 'volume',
+      qty: 0,
+      duration: 60,
+      dest: '',
+      note: ''
+    };
+    for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) j[k] = extra[k];
+    return j;
+  }
+
+  /* Копия строки задания для другого дня: новый id, чтобы правка
+     завтрашнего задания не тянулась за сегодняшним. */
+  function cloneJob(job) {
+    var copy = assign({}, job);
+    copy.id = uid('j');
+    return copy;
+  }
+
+  /* Разворачивает шаблон дня недели в блоки конкретной даты. */
+  function materialize(config, day) {
+    var wd = weekdayOf(day.date);
+    var template = (config.templates && config.templates[wd.key]) || [];
+    day.blocks = template.map(function (t) {
+      return blockFrom(t, 'template');
+    });
+    applyVolumes(config, day);
+    applyAbsence(config, day);
+    return day;
+  }
+
+  function blockFrom(src, origin) {
+    return {
+      id: uid('b'),
+      staffId: src.staffId || null,
+      taskId: src.taskId,
+      mode: src.mode,
+      duration: src.duration || 0,
+      share: src.share || 1,
+      qty: src.qty || 0,
+      productId: src.productId || '',
+      packSize: src.packSize == null ? null : src.packSize,
+      variant: src.variant || '',
+      dest: src.dest || '',
+      note: src.note || '',
+      pinnedStart: src.pinnedStart || null,
+      status: 'planned',
+      doneQty: 0,
+      fromStaffId: null,
+      origin: origin || 'manual'
+    };
+  }
+
+  /*
+   * Раскидывает дневной объём по блокам.
+   *
+   * Если на фасовке двое, а введено 400 пакетов — каждому по 200. Доля
+   * настраивается полем share. Остаток от деления отдаём последнему
+   * блоку, чтобы сумма по людям сходилась ровно с введённым числом.
+   */
+  function applyVolumes(config, day) {
+    var byKey = {};
+    (day.blocks || []).forEach(function (b) {
+      if (b.mode !== 'volume') return;
+      (byKey[volumeKey(b)] = byKey[volumeKey(b)] || []).push(b);
+    });
+
+    Object.keys(byKey).forEach(function (key) {
+      var list = byKey[key];
+      var total = Number(day.volumes && day.volumes[key]);
+      /* Объём на день не задан — оставляем то, что уже стоит в блоках
+         (их могло проставить распределение задания). */
+      if (!isFinite(total)) return;
+
+      var weights = list.reduce(function (s, b) { return s + (Number(b.share) || 1); }, 0);
+      var given = 0;
+      list.forEach(function (b, i) {
+        if (i === list.length - 1) {
+          b.qty = Math.max(0, total - given);
+          return;
+        }
+        b.qty = Math.round(total * (Number(b.share) || 1) / weights);
+        given += b.qty;
+      });
+    });
+    return day;
+  }
+
+  /* ============================================================
+     Смены и перерывы
+     ============================================================ */
+
+  function shiftOf(config, staff) {
+    var s = (staff && staff.shift) || config.shift;
+    return { start: hhmm(s.start), end: hhmm(s.end) };
+  }
+
+  /* Перерывы конкретного человека: общие плюс адресованные лично ему. */
+  function breaksOf(config, staff) {
+    var all = (config.shift && config.shift.breaks) || [];
+    return all.filter(function (b) {
+      var ids = b.staffIds || [];
+      return !ids.length || (staff && ids.indexOf(staff.id) >= 0);
+    }).map(function (b) {
+      var start = hhmm(b.start);
+      return { title: b.title || 'Перерыв', start: start, end: start + (Number(b.duration) || 0) };
+    }).sort(function (a, b) { return a.start - b.start; });
+  }
+
+  /* Сколько человек реально может работать: смена минус его перерывы. */
+  function capacityOf(config, staff) {
+    var sh = shiftOf(config, staff);
+    var lost = breaksOf(config, staff).reduce(function (sum, br) {
+      return sum + (br.start >= sh.start && br.end <= sh.end ? br.end - br.start : 0);
+    }, 0);
+    return Math.max(0, sh.end - sh.start - lost);
+  }
+
+  /* ============================================================
+     Отсутствие и перераспределение
+     ============================================================ */
+
+  function isAvailable(staff, day) {
+    if (!staff || staff.status !== 'active') return false;
+    return (day.absent || []).indexOf(staff.id) < 0;
+  }
+
+  function availableStaff(config, day) {
+    return (config.staff || []).filter(function (s) { return isAvailable(s, day); });
+  }
+
+  /* Умеет ли человек эту задачу. Пустой список навыков = универсал:
+     на складе из четырёх человек проще отмечать исключения, чем
+     заполнять матрицу «кто что умеет» целиком. */
+  function canDo(staff, taskId) {
+    if (!staff.skills || !staff.skills.length) return true;
+    return staff.skills.indexOf(taskId) >= 0;
+  }
+
+  /* Важность блока: направление важнее операции — «на Amazon» режут
+     последним, что бы это ни была за работа. */
+  function priorityOf(config, block) {
+    var dest = destOf(block.dest);
+    if (dest && dest.key) return dest.priority;
+    return taskOf(config, block).priority || 2;
+  }
+
+  function destOf(key) {
+    for (var i = 0; i < DESTINATIONS.length; i++) {
+      if (DESTINATIONS[i].key === (key || '')) return DESTINATIONS[i];
+    }
+    return null;
+  }
+
+  /*
+   * Кто-то не вышел — его блоки уходят другим.
+   *
+   * Порядок разбора: сначала критичные, внутри важности — длинные
+   * вперёд. Длинный блок сложнее пристроить, и если раздать сперва
+   * мелочь, он упрётся в того, кто уже загружен.
+   */
+  function applyAbsence(config, day) {
+    var blocks = day.blocks || [];
+    var people = availableStaff(config, day);
+    var byId = indexBy(config.staff || []);
+
+    /* Вернуть блоки тому, кто снова на месте: снятая галочка
+       «нет на работе» должна откатывать вчерашнее перераспределение. */
+    blocks.forEach(function (b) {
+      if (!b.fromStaffId) return;
+      var owner = byId[b.fromStaffId];
+      if (owner && isAvailable(owner, day)) {
+        b.staffId = b.fromStaffId;
+        b.fromStaffId = null;
+        b.warn = '';
+      }
+    });
+
+    if (!people.length) {
+      blocks.forEach(function (b) {
+        if (b.staffId && !isAvailable(byId[b.staffId], day)) {
+          b.fromStaffId = b.fromStaffId || b.staffId;
+          b.staffId = null;
+          b.warn = 'некому передать';
+        }
+      });
+      return day;
+    }
+
+    var load = {};
+    people.forEach(function (s) { load[s.id] = 0; });
+    blocks.forEach(function (b) {
+      if (b.staffId && load[b.staffId] != null) load[b.staffId] += durationOf(config, b);
+    });
+
+    var orphans = blocks.filter(function (b) {
+      return !b.staffId || load[b.staffId] == null;
+    });
+
+    orphans.sort(function (a, b) {
+      var pa = priorityOf(config, a);
+      var pb = priorityOf(config, b);
+      if (pa !== pb) return pa - pb;
+      return durationOf(config, b) - durationOf(config, a);
+    });
+
+    orphans.forEach(function (b) {
+      var skilled = people.filter(function (s) { return canDo(s, b.taskId); });
+      var pool = skilled.length ? skilled : people;
+      var pick = pool.reduce(function (best, s) {
+        return load[s.id] < load[best.id] ? s : best;
+      }, pool[0]);
+
+      b.fromStaffId = b.fromStaffId || b.staffId || null;
+      b.staffId = pick.id;
+      b.warn = skilled.length ? '' : 'задача вне навыков';
+      load[pick.id] += durationOf(config, b);
+    });
+
+    return day;
+  }
+
+  /* ============================================================
+     Нормы и расчёт длительности
+     ============================================================ */
+
+  function taskOf(config, block) {
+    var list = config.tasks || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === block.taskId) return list[i];
+    return { id: block.taskId, title: block.taskId, mode: 'time', unit: '', minPerUnit: 0, priority: 2, color: '#94a3b8', byProduct: {} };
+  }
+
+  function productOf(config, block) {
+    if (!block || !block.productId) return null;
+    var list = config.products || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === block.productId) return list[i];
+    return null;
+  }
+
+  function packOf(config, block) {
+    var product = productOf(config, block);
+    if (!product || !block.packSize) return null;
+    var list = product.packs || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === block.packSize) return list[i];
+    return null;
+  }
+
+  /*
+   * Норма: минут на единицу плюс сама единица. Единица нужна потому,
+   * что один и тот же «сортинг» на Starburst считают коробками, а на
+   * Jolly — пакетами; сводить их к общей единице значит выбросить то,
+   * как люди на складе на самом деле мерят работу.
+   *
+   * Поиск от частного к общему: «товар + фасовка» → «товар» → операция.
+   */
+  function normOf(config, block) {
+    var task = taskOf(config, block);
+    var by = task.byProduct || {};
+    var pid = block.productId || '';
+    var found = null;
+
+    if (pid && block.packSize && by[pid + ':' + block.packSize] != null) found = by[pid + ':' + block.packSize];
+    else if (pid && by[pid] != null) found = by[pid];
+
+    if (found == null) return { min: Number(task.minPerUnit) || 0, unit: task.unit || 'шт' };
+    if (typeof found === 'number') return { min: found, unit: task.unit || 'шт' };
+    return { min: Number(found.min) || 0, unit: found.unit || task.unit || 'шт' };
+  }
+
+  function normFor(config, block) { return normOf(config, block).min; }
+
+  function unitFor(config, block) { return normOf(config, block).unit; }
+
+  /* Ключ объёма на день. Товар, фасовка и цвет входят в ключ: «100
+     пакетов Frooties 2 lb» и «300 пакетов Starburst 1 lb» — разные
+     строки, складывать их в одно число нельзя. */
+  function volumeKey(block) {
+    return [
+      block.taskId,
+      block.productId || '',
+      block.packSize == null ? '' : block.packSize,
+      block.variant || ''
+    ].join('|');
+  }
+
+  /* Подпись работы: «Переборка по цветам · Starburst · Watermelon»,
+     «Фасовка (взвешивание) · Jolly Rancher 2 lb». */
+  function blockTitle(config, block) {
+    var task = taskOf(config, block);
+    var product = productOf(config, block);
+    if (!product) return task.title;
+    var pk = packOf(config, block);
+    return task.title + ' · ' + product.title
+      + (pk ? ' ' + pk.title : '')
+      + (block.variant ? ' · ' + block.variant : '');
+  }
+
+  /*
+   * Те самые «оба варианта»:
+   *   time   — сколько поставили, столько и стоит в плане;
+   *   volume — количество × норма, округляя вверх до 5 минут (планировать
+   *            смену с точностью до секунды бессмысленно, а «2 ч 03 мин»
+   *            на планшете выглядит как ошибка).
+   */
+  function durationOf(config, block) {
+    if (block.mode === 'volume') {
+      var raw = (Number(block.qty) || 0) * normFor(config, block);
+      return raw > 0 ? Math.max(5, Math.ceil(raw / 5) * 5) : 0;
+    }
+    return Math.max(0, Number(block.duration) || 0);
+  }
+
+  /*
+   * Сколько успеют за отведённое время. Обратная сторона расчёта: для
+   * переборки время задано, а знать нужно выработку — «2,5 часа на
+   * Starburst это примерно 10 коробок».
+   */
+  function expectedOutput(config, block) {
+    if (block.mode !== 'time') return null;
+    var norm = normOf(config, block);
+    if (!norm.min) return null;
+    var qty = (Number(block.duration) || 0) / norm.min;
+    if (qty < 1) return null;
+    var rounded = Math.round(qty * 10) / 10;
+    return { qty: rounded, unit: plural(rounded, norm.unit) };
+  }
+
+  /* Сколько коробок выйдет из пакетов — по таблице склада. */
+  function boxesFromBags(config, block, bags) {
+    var pk = packOf(config, block);
+    if (!pk || !pk.bagsPerBox) return null;
+    return Math.ceil((Number(bags) || 0) / pk.bagsPerBox);
+  }
+
+  function palletSize(config) {
+    var p = config.pallet || {};
+    return (Number(p.boxesPerLevel) || 0) * (Number(p.levels) || 0);
+  }
+
+  /* ============================================================
+     Распределение задания по людям
+     ============================================================ */
+
+  /*
+   * Превращает задание на день в план: кто, что и сколько делает.
+   *
+   * Правила, которые здесь зашиты, — те же, по которым это делают
+   * руками:
+   *   — сначала критичное (Amazon и заказы), потом остальное;
+   *   — работу можно делить между людьми, если одному не успеть;
+   *   — на сидячей работе не держим дольше maxSittingStreak подряд;
+   *   — что не влезло в смену, не выбрасываем, а возвращаем списком.
+   *
+   * Существующие блоки заменяются целиком: это «собрать день заново»,
+   * а не «дополнить».
+   */
+  function autoAssign(config, day) {
+    var people = availableStaff(config, day);
+    day.blocks = [];
+    day.overflow = [];
+
+    if (!people.length) {
+      day.overflow = (day.jobs || []).slice();
+      return day;
+    }
+
+    var cap = {};
+    var load = {};
+    var lastTask = {};
+    var streak = {};
+    people.forEach(function (s) {
+      cap[s.id] = capacityOf(config, s);
+      load[s.id] = 0;
+      lastTask[s.id] = '';
+      streak[s.id] = 0;
+    });
+
+    var maxStreak = (config.rules && config.rules.maxSittingStreak) || 180;
+
+    var jobs = (day.jobs || []).slice().sort(function (a, b) {
+      var pa = priorityOf(config, a);
+      var pb = priorityOf(config, b);
+      if (pa !== pb) return pa - pb;
+      return jobMinutes(config, b) - jobMinutes(config, a);
+    });
+
+    jobs.forEach(function (job) {
+      var norm = normFor(config, job);
+      var sitting = taskOf(config, job).sitting;
+      var left = job.mode === 'volume' ? (Number(job.qty) || 0) : (Number(job.duration) || 0);
+      if (left <= 0) return;
+
+      /*
+       * Сколько минут этой работы человек ещё может взять. Ноль значит
+       * «этот не может» — но это не повод бросать задачу: её берёт
+       * следующий. Из-за этого выбор кандидата и считается отдельно от
+       * цикла раздачи.
+       */
+      function roomFor(s) {
+        var free = cap[s.id] - load[s.id];
+        if (free <= 0) return 0;
+        if (!sitting) return free;
+        /* Ограничение на сидячую работу подряд считается только по
+           текущему непрерывному отрезку: пересел на другое — обнулилось. */
+        var used = lastTask[s.id] === job.taskId ? streak[s.id] : 0;
+        return Math.min(free, Math.max(0, maxStreak - used));
+      }
+
+      var guard = 0;
+      while (left > 0 && guard++ < 200) {
+        var pool = people.filter(function (s) {
+          if (!canDo(s, job.taskId)) return false;
+          var room = roomFor(s);
+          if (room <= 0) return false;
+          /* На дробную единицу работу не режем: если у человека не
+             влезает даже один пакет, он не кандидат. */
+          return job.mode !== 'volume' || norm <= 0 || Math.floor(room / norm) >= 1;
+        });
+        if (!pool.length) break;
+
+        /* Самый свободный; при равенстве — тот, кто не делал эту же
+           работу последним, чтобы не сажать человека на одно и то же
+           весь день. */
+        var pick = pool.reduce(function (best, s) {
+          var free = cap[s.id] - load[s.id];
+          var bestFree = cap[best.id] - load[best.id];
+          if (free !== bestFree) return free > bestFree ? s : best;
+          var sRepeats = lastTask[s.id] === job.taskId;
+          var bestRepeats = lastTask[best.id] === job.taskId;
+          if (sRepeats !== bestRepeats) return sRepeats ? best : s;
+          return best;
+        }, pool[0]);
+
+        var chunkMin = roomFor(pick);
+        var block;
+        if (job.mode === 'volume') {
+          var qty = norm > 0 ? Math.floor(chunkMin / norm) : left;
+          if (qty > left) qty = left;
+          block = blockFrom({
+            staffId: pick.id, taskId: job.taskId, mode: 'volume',
+            qty: qty, productId: job.productId, packSize: job.packSize,
+            variant: job.variant, dest: job.dest, note: job.note
+          }, 'auto');
+          left -= qty;
+        } else {
+          var mins = Math.min(left, chunkMin);
+          block = blockFrom({
+            staffId: pick.id, taskId: job.taskId, mode: 'time',
+            duration: mins, productId: job.productId, packSize: job.packSize,
+            variant: job.variant, dest: job.dest, note: job.note
+          }, 'auto');
+          left -= mins;
+        }
+
+        var spent = durationOf(config, block);
+        day.blocks.push(block);
+        load[pick.id] += spent;
+        streak[pick.id] = lastTask[pick.id] === job.taskId ? streak[pick.id] + spent : spent;
+        lastTask[pick.id] = job.taskId;
+      }
+
+      if (left > 0) {
+        day.overflow.push(assign({}, job, job.mode === 'volume' ? { qty: left } : { duration: left }));
+      }
+    });
+
+    fillFreeTime(config, day, people, cap, load, lastTask);
+    return day;
+  }
+
+  /*
+   * Свободное время в конце смены заполняем переборкой: именно так это
+   * и происходит на складе — если заданий больше нет, готовят балк на
+   * завтра, а не расходятся.
+   */
+  function fillFreeTime(config, day, people, cap, load, lastTask) {
+    var fillId = config.rules && config.rules.fillTask;
+    if (!fillId) return;
+    var maxStreak = (config.rules && config.rules.maxSittingStreak) || 180;
+
+    people.forEach(function (s) {
+      var free = cap[s.id] - load[s.id];
+      /* Меньше получаса добивать нечем — это не работа, а обрывок. */
+      if (free < 30 || !canDo(s, fillId)) return;
+
+      var product = defaultSortProduct(config);
+      day.blocks.push(blockFrom({
+        staffId: s.id, taskId: fillId, mode: 'time',
+        duration: Math.min(free, maxStreak),
+        productId: product ? product.id : '',
+        dest: 'bulk', note: 'добить смену'
+      }, 'fill'));
+      load[s.id] += Math.min(free, maxStreak);
+    });
+  }
+
+  function defaultSortProduct(config) {
+    var list = (config.products || []).filter(function (p) { return p.sortable; });
+    return list[0] || null;
+  }
+
+  function jobMinutes(config, job) {
+    return job.mode === 'volume'
+      ? (Number(job.qty) || 0) * normFor(config, job)
+      : (Number(job.duration) || 0);
+  }
+
+  /* ============================================================
+     Раскладка по времени
+     ============================================================ */
+
+  /*
+   * Ставит блоки одного человека на ось времени подряд от начала смены.
+   * Перерыв не отменяет задачу, а сдвигает её конец: попал обед в
+   * середину фасовки — фасовка закончится позже.
+   */
+  function layout(config, staff, blocks) {
+    var sh = shiftOf(config, staff);
+    var breaks = breaksOf(config, staff);
+    var cursor = sh.start;
+    var items = [];
+
+    blocks.forEach(function (b) {
+      var dur = durationOf(config, b);
+      if (b.pinnedStart != null && b.pinnedStart !== '') cursor = Math.max(cursor, hhmm(b.pinnedStart));
+
+      /* Начало не должно попадать внутрь перерыва. */
+      breaks.forEach(function (br) {
+        if (cursor >= br.start && cursor < br.end) cursor = br.end;
+      });
+
+      var start = cursor;
+      var end = start + dur;
+      var crossed = null;
+      breaks.forEach(function (br) {
+        if (start < br.start && end > br.start) {
+          end += (br.end - br.start);
+          crossed = br;
+        }
+      });
+
+      items.push({
+        block: b,
+        start: start,
+        end: end,
+        duration: dur,
+        crossedBreak: crossed ? crossed.title : '',
+        overtime: end > sh.end
+      });
+      cursor = end;
+    });
+
+    return { shift: sh, items: items, endsAt: cursor };
+  }
+
+  /*
+   * Полная раскладка дня: дорожки по людям, сводка и предупреждения.
+   * Ничего не меняет во входных данных — вызывается на каждую отрисовку.
+   */
+  function schedule(config, day) {
+    var byId = indexBy(config.staff || []);
+    var blocks = day.blocks || [];
+    var lanes = [];
+    var warnings = [];
+    var maxStreak = (config.rules && config.rules.maxSittingStreak) || 180;
+
+    (config.staff || []).forEach(function (s) {
+      if (s.status === 'left') return;
+      var mine = blocks.filter(function (b) { return b.staffId === s.id; });
+      var lay = layout(config, s, mine);
+      var planned = lay.items.reduce(function (sum, i) { return sum + i.duration; }, 0);
+      var capacity = capacityOf(config, s);
+
+      lanes.push({
+        staff: s,
+        available: isAvailable(s, day),
+        absent: (day.absent || []).indexOf(s.id) >= 0,
+        vacation: s.status === 'vacation',
+        items: lay.items,
+        shift: lay.shift,
+        breaks: breaksOf(config, s),
+        endsAt: lay.endsAt,
+        plannedMin: planned,
+        capacityMin: capacity,
+        freeMin: Math.max(0, capacity - planned),
+        overMin: Math.max(0, planned - capacity),
+        loadPct: capacity ? Math.round(planned / capacity * 100) : 0,
+        sittingStreak: longestSittingStreak(config, lay.items)
+      });
+    });
+
+    lanes.forEach(function (l) {
+      if (!l.available && l.items.length) {
+        warnings.push({ level: 'error', text: l.staff.name + ': задачи стоят на том, кого нет на работе' });
+      }
+      if (l.available && l.overMin > 0) {
+        warnings.push({ level: 'warn', text: l.staff.name + ': смена переполнена на ' + human(l.overMin) });
+      }
+      if (l.available && l.plannedMin === 0) {
+        warnings.push({ level: 'info', text: l.staff.name + ': на сегодня нет задач' });
+      }
+      if (l.available && l.sittingStreak > maxStreak) {
+        warnings.push({
+          level: 'warn',
+          text: l.staff.name + ': ' + human(l.sittingStreak) + ' сидячей работы подряд — стоит разбавить'
+        });
+      }
+    });
+
+    blocks.forEach(function (b) {
+      if (!b.staffId) {
+        warnings.push({ level: 'error', text: blockTitle(config, b) + ': некому передать' });
+      } else if (b.warn) {
+        warnings.push({ level: 'warn', text: (byId[b.staffId] || {}).name + ': ' + blockTitle(config, b) + ' — ' + b.warn });
+      }
+    });
+
+    (day.overflow || []).forEach(function (job) {
+      warnings.push({ level: 'error', text: 'Не влезает в смену: ' + blockTitle(config, job) });
+    });
+
+    var totalPlanned = lanes.reduce(function (s, l) { return s + (l.available ? l.plannedMin : 0); }, 0);
+    var totalCapacity = lanes.reduce(function (s, l) { return s + (l.available ? l.capacityMin : 0); }, 0);
+    var done = blocks.filter(function (b) { return b.status === 'done'; }).length;
+
+    return {
+      date: day.date,
+      weekday: weekdayOf(day.date),
+      lanes: lanes,
+      unassigned: blocks.filter(function (b) { return !b.staffId; }),
+      overflow: day.overflow || [],
+      warnings: warnings,
+      totals: {
+        plannedMin: totalPlanned,
+        capacityMin: totalCapacity,
+        freeMin: Math.max(0, totalCapacity - totalPlanned),
+        loadPct: totalCapacity ? Math.round(totalPlanned / totalCapacity * 100) : 0,
+        blocks: blocks.length,
+        done: done,
+        people: lanes.filter(function (l) { return l.available; }).length
+      }
+    };
+  }
+
+  /* Самый长 отрезок сидячей работы подряд — по нему видно, что человек
+     полдня не вставал. Перерыв отрезок не разрывает: он короткий. */
+  function longestSittingStreak(config, items) {
+    var best = 0;
+    var run = 0;
+    var prev = '';
+    items.forEach(function (i) {
+      var task = taskOf(config, i.block);
+      if (!task.sitting) { run = 0; prev = ''; return; }
+      run = (task.id === prev || prev === '') ? run + i.duration : i.duration;
+      prev = task.id;
+      if (run > best) best = run;
+    });
+    return best;
+  }
+
+  /* ============================================================
+     Служебное
+     ============================================================ */
+
+  function indexBy(list, key) {
+    var out = {};
+    (list || []).forEach(function (x) { out[x[key || 'id']] = x; });
+    return out;
+  }
+
+  function assign(target) {
+    for (var i = 1; i < arguments.length; i++) {
+      var src = arguments[i] || {};
+      for (var k in src) if (Object.prototype.hasOwnProperty.call(src, k)) target[k] = src[k];
+    }
+    return target;
+  }
+
+  function clone(x) { return JSON.parse(JSON.stringify(x)); }
+
+  /* Какие объёмы спрашивать на день — по одной строке на связку
+     «операция + товар + фасовка + цвет». */
+  function volumeTasks(config, day) {
+    var seen = {};
+    var out = [];
+    (day.blocks || []).forEach(function (b) {
+      var key = volumeKey(b);
+      if (b.mode !== 'volume' || seen[key]) return;
+      seen[key] = true;
+      out.push({
+        key: key,
+        id: key,
+        title: blockTitle(config, b),
+        unit: unitFor(config, b)
+      });
+    });
+    return out;
+  }
+
+  return {
+    WEEKDAYS: WEEKDAYS,
+    DESTINATIONS: DESTINATIONS,
+    PRIORITIES: PRIORITIES,
+    STATUSES: STATUSES,
+    plural: plural,
+    hhmm: hhmm,
+    fmt: fmt,
+    human: human,
+    todayISO: todayISO,
+    shiftISO: shiftISO,
+    weekdayOf: weekdayOf,
+    humanDate: humanDate,
+    uid: uid,
+    defaultConfig: defaultConfig,
+    emptyDay: emptyDay,
+    newJob: newJob,
+    cloneJob: cloneJob,
+    materialize: materialize,
+    blockFrom: blockFrom,
+    applyVolumes: applyVolumes,
+    applyAbsence: applyAbsence,
+    autoAssign: autoAssign,
+    availableStaff: availableStaff,
+    isAvailable: isAvailable,
+    canDo: canDo,
+    priorityOf: priorityOf,
+    destOf: destOf,
+    shiftOf: shiftOf,
+    breaksOf: breaksOf,
+    capacityOf: capacityOf,
+    taskOf: taskOf,
+    productOf: productOf,
+    packOf: packOf,
+    normOf: normOf,
+    normFor: normFor,
+    unitFor: unitFor,
+    volumeKey: volumeKey,
+    blockTitle: blockTitle,
+    expectedOutput: expectedOutput,
+    boxesFromBags: boxesFromBags,
+    palletSize: palletSize,
+    durationOf: durationOf,
+    schedule: schedule,
+    volumeTasks: volumeTasks,
+    indexBy: indexBy,
+    clone: clone
+  };
+});

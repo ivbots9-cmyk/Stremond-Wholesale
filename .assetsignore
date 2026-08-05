@@ -1,0 +1,9 @@
+# Что не выкладывать вместе со страницей плана. Сам worker.js Cloudflare
+# берёт как код (main в wrangler.toml), в статике ему делать нечего —
+# иначе он был бы доступен по прямой ссылке вместе со схемой базы.
+worker.js
+worker.test.js
+test.js
+schema.sql
+wrangler.toml
+README.md

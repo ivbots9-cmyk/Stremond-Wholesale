@@ -1,0 +1,632 @@
+#!/usr/bin/env node
+/*
+ * Тесты движка плана: node warehouse/test.js
+ *
+ * Проверяют то, из-за чего плану перестают верить: что объём правда
+ * превращается во время, что при делении между людьми не теряются
+ * пакеты, что отсутствие человека не роняет его работу в никуда и что
+ * распределение задания не сажает одного человека на переборку весь
+ * день.
+ */
+'use strict';
+
+var assert = require('assert');
+var P = require('./plan.js');
+
+var failed = 0;
+function check(name, fn) {
+  try {
+    fn();
+    console.log('  ok   ' + name);
+  } catch (e) {
+    failed++;
+    console.error('  FAIL ' + name + '\n       ' + e.message);
+  }
+}
+
+/* Фиксированные даты 2026 года, чтобы тест не зависел от дня запуска. */
+var MONDAY = '2026-08-03';
+var TUESDAY = '2026-08-04';
+var SUNDAY = '2026-08-09';
+
+function freshDay(date, config) {
+  var day = P.emptyDay(date || MONDAY);
+  P.materialize(config || P.defaultConfig(), day);
+  return day;
+}
+
+function staff(cfg, id) {
+  return cfg.staff.filter(function (s) { return s.id === id; })[0];
+}
+
+function lane(view, id) {
+  return view.lanes.filter(function (l) { return l.staff.id === id; })[0];
+}
+
+/* Заполняет все объёмы дня одним числом — чтобы в сценарных тестах не
+   выписывать составные ключи руками. */
+function fillVolumes(cfg, day, qty) {
+  day.volumes = day.volumes || {};
+  (day.blocks || []).forEach(function (b) {
+    if (b.mode === 'volume') day.volumes[P.volumeKey(b)] = qty;
+  });
+  P.applyVolumes(cfg, day);
+  return day;
+}
+
+console.log('\nдвижок плана склада\n');
+
+/* ---------- время ---------- */
+
+check('hhmm/fmt — время ходит туда и обратно', function () {
+  assert.strictEqual(P.hhmm('09:30'), 570);
+  assert.strictEqual(P.fmt(570), '09:30');
+  assert.strictEqual(P.fmt(P.hhmm('16:50')), '16:50');
+});
+
+check('human — часы и минуты по-русски', function () {
+  assert.strictEqual(P.human(45), '45 мин');
+  assert.strictEqual(P.human(120), '2 ч');
+  assert.strictEqual(P.human(150), '2 ч 30 мин');
+});
+
+check('склонение единиц', function () {
+  assert.strictEqual(P.plural(1, 'коробка'), 'коробка');
+  assert.strictEqual(P.plural(3, 'коробка'), 'коробки');
+  assert.strictEqual(P.plural(10, 'коробка'), 'коробок');
+  assert.strictEqual(P.plural(11, 'коробка'), 'коробок');
+  assert.strictEqual(P.plural(21, 'коробка'), 'коробка');
+  assert.strictEqual(P.plural(2.5, 'коробка'), 'коробки');
+  assert.strictEqual(P.plural(5, 'бушель'), 'бушель', 'незнакомую единицу коверкать нельзя');
+});
+
+check('weekdayOf и переход через границу месяца', function () {
+  assert.strictEqual(P.weekdayOf(MONDAY).key, 'mon');
+  assert.strictEqual(P.weekdayOf(SUNDAY).key, 'sun');
+  assert.strictEqual(P.shiftISO('2026-08-31', 1), '2026-09-01');
+  assert.strictEqual(P.shiftISO('2026-01-01', -1), '2025-12-31');
+});
+
+/* ---------- смены и перерывы ---------- */
+
+check('смены сходятся с выгрузкой Clockify', function () {
+  var cfg = P.defaultConfig();
+  /* Крис 09:30–16:50 минус мини-брейк 10 и перерыв 20 = 6 ч 50 мин */
+  assert.strictEqual(P.capacityOf(cfg, staff(cfg, 'kris')), 410);
+  /* Ева 10:00–16:50 минус те же 30 минут = 6 ч 20 мин */
+  assert.strictEqual(P.capacityOf(cfg, staff(cfg, 'eva')), 380);
+});
+
+check('перерыв достаётся только своим', function () {
+  var cfg = P.defaultConfig();
+  var kris = P.breaksOf(cfg, staff(cfg, 'kris')).map(function (b) { return P.fmt(b.start); });
+  var eva = P.breaksOf(cfg, staff(cfg, 'eva')).map(function (b) { return P.fmt(b.start); });
+
+  assert.deepStrictEqual(kris, ['11:50', '13:30'], 'у Криса мини-брейк и перерыв в 13:30');
+  assert.deepStrictEqual(eva, ['11:50', '14:00'], 'у Евы мини-брейк и перерыв в 14:00');
+});
+
+check('у каждого своё начало смены', function () {
+  var cfg = P.defaultConfig();
+  assert.strictEqual(P.fmt(P.shiftOf(cfg, staff(cfg, 'kris')).start), '09:30');
+  assert.strictEqual(P.fmt(P.shiftOf(cfg, staff(cfg, 'eva')).start), '10:00');
+});
+
+/* ---------- два способа расчёта ---------- */
+
+check('mode time — длительность берётся как есть, количество не влияет', function () {
+  var cfg = P.defaultConfig();
+  assert.strictEqual(P.durationOf(cfg, { taskId: 'sort', mode: 'time', duration: 150, qty: 9999 }), 150);
+});
+
+check('mode volume — количество × норма', function () {
+  var cfg = P.defaultConfig();
+  cfg.tasks.filter(function (t) { return t.id === 'pack'; })[0].byProduct['frooties:2lb'] = 1;
+  var block = { taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', qty: 180 };
+  assert.strictEqual(P.durationOf(cfg, block), 180);
+});
+
+check('mode volume — округление вверх до 5 минут, ноль остаётся нулём', function () {
+  var cfg = P.defaultConfig();
+  cfg.tasks.filter(function (t) { return t.id === 'pack'; })[0].byProduct['starburst:1lb'] = 0.75;
+  var b = { taskId: 'pack', productId: 'starburst', packSize: '1lb', mode: 'volume', qty: 101 };
+  assert.strictEqual(P.durationOf(cfg, b), 80, '101 × 0,75 = 75,75 → 80');
+  assert.strictEqual(P.durationOf(cfg, { taskId: 'pack', productId: 'starburst', packSize: '1lb', mode: 'volume', qty: 0 }), 0);
+});
+
+/* ---------- нормы по товару ---------- */
+
+check('норма ищется от частного к общему', function () {
+  var cfg = P.defaultConfig();
+  var pack = cfg.tasks.filter(function (t) { return t.id === 'pack'; })[0];
+  pack.minPerUnit = 9;
+  pack.byProduct = { jolly: 4, 'jolly:5lb': 7 };
+
+  assert.strictEqual(P.normFor(cfg, { taskId: 'pack', productId: 'jolly', packSize: '5lb' }), 7, 'товар + фасовка');
+  assert.strictEqual(P.normFor(cfg, { taskId: 'pack', productId: 'jolly', packSize: '2lb' }), 4, 'товар');
+  assert.strictEqual(P.normFor(cfg, { taskId: 'pack', productId: 'frooties', packSize: '2lb' }), 9, 'базовая');
+  assert.strictEqual(P.normFor(cfg, { taskId: 'pack' }), 9, 'товар не указан');
+});
+
+check('у нормы своя единица: Starburst в коробках, Jolly в пакетах', function () {
+  var cfg = P.defaultConfig();
+  var sb = P.normOf(cfg, { taskId: 'sort', productId: 'starburst' });
+  var jr = P.normOf(cfg, { taskId: 'sort', productId: 'jolly' });
+
+  assert.strictEqual(sb.unit, 'коробка');
+  assert.strictEqual(sb.min, 15, '4 коробки в час');
+  assert.strictEqual(jr.unit, 'пакет');
+  /* 10–11 пакетов в час → около 5,7 минуты на пакет */
+  assert.ok(jr.min > 5 && jr.min < 6.5, 'норма Jolly должна быть около 5,7 мин на пакет');
+});
+
+check('выработка за отведённое время', function () {
+  var cfg = P.defaultConfig();
+  var sb = P.expectedOutput(cfg, { taskId: 'sort', productId: 'starburst', mode: 'time', duration: 150 });
+  assert.strictEqual(sb.qty, 10, '2,5 часа Starburst = 10 коробок');
+  assert.strictEqual(sb.unit, 'коробок');
+
+  var jr = P.expectedOutput(cfg, { taskId: 'sort', productId: 'jolly', mode: 'time', duration: 150 });
+  assert.ok(jr.qty > 25 && jr.qty < 27, '2,5 часа Jolly ≈ 26 пакетов, получено ' + jr.qty);
+  /* 26,3 — дробное, значит родительный падеж единственного числа */
+  assert.strictEqual(jr.unit, 'пакета');
+});
+
+check('у задачи по количеству выработки нет', function () {
+  var cfg = P.defaultConfig();
+  assert.strictEqual(P.expectedOutput(cfg, { taskId: 'pack', mode: 'volume', qty: 10 }), null);
+});
+
+/* ---------- товары и коробки ---------- */
+
+check('таблица склада: пакетов в коробке', function () {
+  var cfg = P.defaultConfig();
+  /* Frooties 2 lb — 18 пакетов в коробке, они уходят на TikTok */
+  assert.strictEqual(P.packOf(cfg, { productId: 'frooties', packSize: '2lb' }).bagsPerBox, 18);
+  assert.strictEqual(P.packOf(cfg, { productId: 'jolly', packSize: '2lb' }).bagsPerBox, 21);
+  assert.strictEqual(P.packOf(cfg, { productId: 'starburst', packSize: '1lb' }).bagsPerBox, 36);
+});
+
+check('пакеты пересчитываются в коробки', function () {
+  var cfg = P.defaultConfig();
+  var b = { productId: 'frooties', packSize: '2lb' };
+  assert.strictEqual(P.boxesFromBags(cfg, b, 180), 10, '180 пакетов по 18 = 10 коробок');
+  assert.strictEqual(P.boxesFromBags(cfg, b, 181), 11, 'неполная коробка всё равно коробка');
+  /* Незаполненная строка таблицы не должна выдавать выдуманное число */
+  assert.strictEqual(P.boxesFromBags(cfg, { productId: 'jolly', packSize: '5lb' }, 100), null);
+});
+
+check('входящая коробка и коробка на отгрузку — разные вещи', function () {
+  var cfg = P.defaultConfig();
+  var sb = cfg.products.filter(function (p) { return p.id === 'starburst'; })[0];
+  assert.strictEqual(sb.inbound.perBox, 6, 'от производителя 6 × 50 oz');
+  assert.strictEqual(sb.packs[0].bagsPerBox, 36, 'на отгрузку 36 пакетов по 1 lb');
+});
+
+check('паллета — 28 коробок', function () {
+  assert.strictEqual(P.palletSize(P.defaultConfig()), 28);
+});
+
+check('подпись работы включает товар, фасовку и цвет', function () {
+  var cfg = P.defaultConfig();
+  assert.strictEqual(P.blockTitle(cfg, { taskId: 'sort', productId: 'starburst' }), 'Переборка по цветам · Starburst');
+  assert.strictEqual(
+    P.blockTitle(cfg, { taskId: 'pack', productId: 'jolly', packSize: '2lb', variant: 'Watermelon' }),
+    'Фасовка (взвешивание) · Jolly Rancher 2 lb · Watermelon'
+  );
+  assert.strictEqual(P.blockTitle(cfg, { taskId: 'clean' }), 'Порядок на складе');
+});
+
+/* ---------- деление объёма ---------- */
+
+check('объём делится между исполнителями без потери единиц', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(MONDAY);
+  day.blocks = [
+    { id: 'a', staffId: 'kris', taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', share: 1, qty: 0 },
+    { id: 'b', staffId: 'eva', taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', share: 1, qty: 0 },
+    { id: 'c', staffId: 'toni', taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', share: 1, qty: 0 }
+  ];
+  day.volumes = {};
+  day.volumes[P.volumeKey(day.blocks[0])] = 400;
+  P.applyVolumes(cfg, day);
+  assert.strictEqual(day.blocks.reduce(function (s, b) { return s + b.qty; }, 0), 400);
+});
+
+check('share задаёт неравные доли', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(MONDAY);
+  day.blocks = [
+    { id: 'a', staffId: 'kris', taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', share: 3, qty: 0 },
+    { id: 'b', staffId: 'eva', taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', share: 1, qty: 0 }
+  ];
+  day.volumes = {};
+  day.volumes[P.volumeKey(day.blocks[0])] = 400;
+  P.applyVolumes(cfg, day);
+  assert.strictEqual(day.blocks[0].qty, 300);
+  assert.strictEqual(day.blocks[1].qty, 100);
+});
+
+check('объём разных товаров и цветов не смешивается', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(MONDAY);
+  day.blocks = [
+    { id: 'a', staffId: 'kris', taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', share: 1, qty: 0 },
+    { id: 'b', staffId: 'eva', taskId: 'pack', productId: 'starburst', packSize: '1lb', mode: 'volume', share: 1, qty: 0 },
+    { id: 'c', staffId: 'toni', taskId: 'pack', productId: 'jolly', packSize: '2lb', variant: 'Grape', mode: 'volume', share: 1, qty: 0 }
+  ];
+  day.volumes = {};
+  day.volumes[P.volumeKey(day.blocks[0])] = 100;
+  day.volumes[P.volumeKey(day.blocks[1])] = 300;
+  day.volumes[P.volumeKey(day.blocks[2])] = 50;
+  P.applyVolumes(cfg, day);
+
+  assert.strictEqual(day.blocks[0].qty, 100);
+  assert.strictEqual(day.blocks[1].qty, 300);
+  assert.strictEqual(day.blocks[2].qty, 50);
+});
+
+/* ---------- шаблон недели ---------- */
+
+check('materialize разворачивает шаблон нужного дня недели', function () {
+  var cfg = P.defaultConfig();
+  var day = freshDay(TUESDAY, cfg);
+  assert.ok(day.blocks.length > 0, 'вторник должен быть заполнен');
+  assert.ok(day.blocks.some(function (b) { return b.taskId === 'sort'; }), 'вторник начинается с переборки');
+});
+
+check('выходной по шаблону даёт пустой день, а не ошибку', function () {
+  var cfg = P.defaultConfig();
+  var day = freshDay(SUNDAY, cfg);
+  assert.deepStrictEqual(day.blocks, []);
+  assert.strictEqual(P.schedule(cfg, day).totals.plannedMin, 0);
+});
+
+check('у блоков дня свои id — правка дня не трогает шаблон', function () {
+  var cfg = P.defaultConfig();
+  var day = freshDay(TUESDAY, cfg);
+  var tplIds = cfg.templates.tue.map(function (t) { return t.id; });
+  day.blocks.forEach(function (b) {
+    assert.ok(tplIds.indexOf(b.id) < 0, 'id блока дня совпал с id шаблона');
+  });
+});
+
+/* ---------- отсутствие и перераспределение ---------- */
+
+check('человек не вышел — его работа уходит другим, ничего не теряется', function () {
+  var cfg = P.defaultConfig();
+  var day = freshDay(TUESDAY, cfg);
+  fillVolumes(cfg, day, 60);
+
+  var before = day.blocks.length;
+  assert.ok(day.blocks.filter(function (b) { return b.staffId === 'eva'; }).length > 0);
+
+  day.absent = ['eva'];
+  P.applyAbsence(cfg, day);
+
+  assert.strictEqual(day.blocks.length, before, 'блоки не должны исчезать');
+  assert.strictEqual(day.blocks.filter(function (b) { return b.staffId === 'eva'; }).length, 0);
+  assert.ok(day.blocks.every(function (b) { return b.staffId; }), 'все задачи должны иметь исполнителя');
+  assert.ok(day.blocks.some(function (b) { return b.fromStaffId === 'eva'; }), 'должно быть видно, чьи это были задачи');
+});
+
+check('перераспределение выравнивает нагрузку', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [1, 2, 3, 4].map(function (n) {
+    return { id: String(n), staffId: 'eva', taskId: 'sort', productId: 'starburst', mode: 'time', duration: 60, status: 'planned' };
+  });
+  day.absent = ['eva'];
+  P.applyAbsence(cfg, day);
+
+  var load = {};
+  day.blocks.forEach(function (b) { load[b.staffId] = (load[b.staffId] || 0) + b.duration; });
+  /* Айсулу в отпуске — остаются Крис и Тони, по два часа каждому. */
+  assert.deepStrictEqual(Object.keys(load).sort(), ['kris', 'toni']);
+  assert.strictEqual(load.kris, 120);
+  assert.strictEqual(load.toni, 120);
+});
+
+check('важность направления решает, что раздаётся первым', function () {
+  var cfg = P.defaultConfig();
+  /* Amazon и заказы — первый приоритет, Walmart — последний */
+  assert.strictEqual(P.priorityOf(cfg, { taskId: 'pack', dest: 'amazon' }), 1);
+  assert.strictEqual(P.priorityOf(cfg, { taskId: 'pack', dest: 'orders' }), 1);
+  assert.strictEqual(P.priorityOf(cfg, { taskId: 'pack', dest: 'tiktok' }), 2);
+  assert.strictEqual(P.priorityOf(cfg, { taskId: 'pack', dest: 'walmart' }), 3);
+});
+
+check('навыки соблюдаются, а нарушение видно', function () {
+  var cfg = P.defaultConfig();
+  staff(cfg, 'kris').skills = ['pack'];
+  staff(cfg, 'toni').skills = ['pack'];
+
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [{ id: '1', staffId: 'eva', taskId: 'ship', mode: 'time', duration: 60 }];
+  day.absent = ['eva'];
+  P.applyAbsence(cfg, day);
+
+  assert.ok(day.blocks[0].staffId, 'работа не должна повиснуть без исполнителя');
+  assert.ok(day.blocks[0].warn, 'должно быть предупреждение: задача вне навыков');
+});
+
+check('человек вернулся — задачи возвращаются ему', function () {
+  var cfg = P.defaultConfig();
+  var day = freshDay(TUESDAY, cfg);
+  var evaIds = day.blocks.filter(function (b) { return b.staffId === 'eva'; }).map(function (b) { return b.id; });
+
+  day.absent = ['eva'];
+  P.applyAbsence(cfg, day);
+  day.absent = [];
+  P.applyAbsence(cfg, day);
+
+  evaIds.forEach(function (id) {
+    var b = day.blocks.filter(function (x) { return x.id === id; })[0];
+    assert.strictEqual(b.staffId, 'eva', 'задача не вернулась исходному исполнителю');
+    assert.strictEqual(b.fromStaffId, null, 'след перераспределения должен сняться');
+  });
+});
+
+check('сотрудник в отпуске в раздачу не попадает', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [{ id: '1', staffId: 'eva', taskId: 'pack', mode: 'time', duration: 60 }];
+  day.absent = ['eva'];
+  P.applyAbsence(cfg, day);
+  assert.notStrictEqual(day.blocks[0].staffId, 'aisulu', 'Айсулу в отпуске, работу получать не должна');
+});
+
+check('никого нет — работа видна как непереданная, а не исчезает', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [{ id: '1', staffId: 'eva', taskId: 'pack', mode: 'time', duration: 60 }];
+  day.absent = ['kris', 'eva', 'toni'];
+  P.applyAbsence(cfg, day);
+
+  assert.strictEqual(day.blocks[0].staffId, null);
+  var s = P.schedule(cfg, day);
+  assert.strictEqual(s.unassigned.length, 1);
+  assert.ok(s.warnings.some(function (w) { return w.level === 'error'; }));
+});
+
+/* ---------- раскладка по времени ---------- */
+
+check('блоки идут подряд от начала смены каждого', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [
+    { id: '1', staffId: 'kris', taskId: 'sort', mode: 'time', duration: 60 },
+    { id: '2', staffId: 'kris', taskId: 'sort', mode: 'time', duration: 30 },
+    { id: '3', staffId: 'eva', taskId: 'sort', mode: 'time', duration: 60 }
+  ];
+  var view = P.schedule(cfg, day);
+  var k = lane(view, 'kris');
+  assert.strictEqual(P.fmt(k.items[0].start), '09:30');
+  assert.strictEqual(P.fmt(k.items[0].end), '10:30');
+  assert.strictEqual(P.fmt(k.items[1].start), '10:30');
+  /* Ева выходит в 10:00, а не в 9:30 */
+  assert.strictEqual(P.fmt(lane(view, 'eva').items[0].start), '10:00');
+});
+
+check('перерыв сдвигает конец задачи, а не отменяет её', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  /* 09:30 + 2,5 часа = 12:00, но мини-брейк 11:50–12:00 внутри → 12:10 */
+  day.blocks = [{ id: '1', staffId: 'kris', taskId: 'sort', mode: 'time', duration: 150 }];
+  var item = lane(P.schedule(cfg, day), 'kris').items[0];
+  assert.strictEqual(P.fmt(item.end), '12:10');
+  assert.strictEqual(item.crossedBreak, 'Мини-брейк');
+});
+
+check('чужой перерыв на человека не влияет', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  /* Ева с 10:00 на 3 часа: её перерыв в 14:00, значит задевает только
+     общий мини-брейк 11:50 → конец 13:10, а не 13:30 */
+  day.blocks = [{ id: '1', staffId: 'eva', taskId: 'sort', mode: 'time', duration: 180 }];
+  assert.strictEqual(P.fmt(lane(P.schedule(cfg, day), 'eva').items[0].end), '13:10');
+});
+
+check('задача, назначенная на время перерыва, ждёт его конца', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  /* 13:35 приходится на перерыв Криса 13:30–13:50 */
+  day.blocks = [{ id: '1', staffId: 'kris', taskId: 'ship', mode: 'time', duration: 30, pinnedStart: '13:35' }];
+  assert.strictEqual(P.fmt(lane(P.schedule(cfg, day), 'kris').items[0].start), '13:50');
+});
+
+check('задача, накрывающая оба перерыва, удлиняется на оба', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  /* 09:30 + 4 часа = 13:30, плюс мини-брейк 10 мин и перерыв 20 мин */
+  day.blocks = [{ id: '1', staffId: 'kris', taskId: 'sort', mode: 'time', duration: 240 }];
+  assert.strictEqual(P.fmt(lane(P.schedule(cfg, day), 'kris').items[0].end), '14:00');
+});
+
+check('pinnedStart прибивает задачу ко времени', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [{ id: '1', staffId: 'kris', taskId: 'ship', mode: 'time', duration: 60, pinnedStart: '15:00' }];
+  assert.strictEqual(P.fmt(lane(P.schedule(cfg, day), 'kris').items[0].start), '15:00');
+});
+
+check('переполненная смена помечается, а не обрезается', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [{ id: '1', staffId: 'kris', taskId: 'ship', mode: 'time', duration: 600 }];
+  var s = P.schedule(cfg, day);
+  assert.ok(lane(s, 'kris').overMin > 0, 'перегруз должен считаться');
+  assert.ok(lane(s, 'kris').items[0].overtime);
+  assert.ok(s.warnings.some(function (w) { return /переполнена/.test(w.text); }));
+});
+
+check('долгая сидячая работа подряд помечается', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.blocks = [
+    { id: '1', staffId: 'kris', taskId: 'sort', productId: 'starburst', mode: 'time', duration: 120 },
+    { id: '2', staffId: 'kris', taskId: 'sort', productId: 'starburst', mode: 'time', duration: 120 }
+  ];
+  var s = P.schedule(cfg, day);
+  assert.strictEqual(lane(s, 'kris').sittingStreak, 240);
+  assert.ok(s.warnings.some(function (w) { return /сидячей работы подряд/.test(w.text); }));
+});
+
+check('отпускник не попадает в сводку доступных', function () {
+  var cfg = P.defaultConfig();
+  var s = P.schedule(cfg, freshDay(TUESDAY, cfg));
+  assert.strictEqual(s.totals.people, 3, 'на месте должны быть трое из четырёх');
+  assert.strictEqual(lane(s, 'aisulu').vacation, true);
+  assert.strictEqual(lane(s, 'aisulu').available, false);
+});
+
+/* ---------- распределение задания ---------- */
+
+function normedConfig() {
+  var cfg = P.defaultConfig();
+  var pack = cfg.tasks.filter(function (t) { return t.id === 'pack'; })[0];
+  pack.byProduct['frooties:2lb'] = 1;
+  pack.byProduct['jolly:2lb'] = 1;
+  return cfg;
+}
+
+check('задание раскидывается по людям', function () {
+  var cfg = normedConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.jobs = [P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 180, dest: 'tiktok' })];
+  P.autoAssign(cfg, day);
+
+  var mine = day.blocks.filter(function (b) { return b.taskId === 'pack'; });
+  assert.ok(mine.length > 0, 'задание должно превратиться в блоки');
+  assert.strictEqual(mine.reduce(function (s, b) { return s + b.qty; }, 0), 180, 'количество не должно потеряться');
+  assert.ok(mine.every(function (b) { return b.staffId; }), 'у каждого блока должен быть исполнитель');
+});
+
+check('большая работа делится между людьми, а не вешается на одного', function () {
+  var cfg = normedConfig();
+  var day = P.emptyDay(TUESDAY);
+  /* 900 пакетов по минуте — заведомо больше одной смены */
+  day.jobs = [P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 900, dest: 'amazon' })];
+  P.autoAssign(cfg, day);
+
+  var owners = {};
+  day.blocks.filter(function (b) { return b.taskId === 'pack'; })
+    .forEach(function (b) { owners[b.staffId] = true; });
+  assert.ok(Object.keys(owners).length >= 2, 'работа должна разойтись минимум на двоих');
+});
+
+check('на сидячей работе не держат дольше лимита подряд', function () {
+  var cfg = P.defaultConfig();
+  cfg.rules.fillTask = '';       // чтобы добивка не мешала считать
+  var day = P.emptyDay(TUESDAY);
+  /* Переборка на весь день одному человеку невозможна: лимит 3 часа */
+  day.jobs = [P.newJob({ taskId: 'sort', productId: 'starburst', mode: 'time', duration: 600, dest: 'bulk' })];
+  P.autoAssign(cfg, day);
+
+  var perStaff = {};
+  day.blocks.forEach(function (b) {
+    perStaff[b.staffId] = (perStaff[b.staffId] || 0) + b.duration;
+  });
+  Object.keys(perStaff).forEach(function (id) {
+    assert.ok(perStaff[id] <= cfg.rules.maxSittingStreak,
+      id + ' получил ' + perStaff[id] + ' мин сидячей работы подряд при лимите ' + cfg.rules.maxSittingStreak);
+  });
+});
+
+check('важное раздаётся раньше неважного', function () {
+  var cfg = normedConfig();
+  cfg.rules.fillTask = '';
+  var day = P.emptyDay(TUESDAY);
+  day.jobs = [
+    P.newJob({ taskId: 'pack', productId: 'jolly', packSize: '2lb', qty: 600, dest: 'walmart' }),
+    P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 600, dest: 'amazon' })
+  ];
+  P.autoAssign(cfg, day);
+
+  var amazon = day.blocks.filter(function (b) { return b.dest === 'amazon'; })
+    .reduce(function (s, b) { return s + b.qty; }, 0);
+  var walmart = day.blocks.filter(function (b) { return b.dest === 'walmart'; })
+    .reduce(function (s, b) { return s + b.qty; }, 0);
+
+  assert.strictEqual(amazon, 600, 'Amazon должен уйти в план целиком');
+  assert.ok(walmart < 600, 'Walmart должен резаться первым');
+  assert.ok(day.overflow.length > 0, 'непоместившееся должно остаться списком, а не пропасть');
+  assert.strictEqual(day.overflow[0].dest, 'walmart');
+});
+
+check('что не влезло — видно в предупреждениях', function () {
+  var cfg = normedConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.jobs = [P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 5000, dest: 'amazon' })];
+  P.autoAssign(cfg, day);
+  var s = P.schedule(cfg, day);
+  assert.ok(s.warnings.some(function (w) { return /Не влезает/.test(w.text); }));
+});
+
+check('свободное время добивается переборкой', function () {
+  var cfg = normedConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.jobs = [P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 30, dest: 'tiktok' })];
+  P.autoAssign(cfg, day);
+
+  var fill = day.blocks.filter(function (b) { return b.origin === 'fill'; });
+  assert.ok(fill.length > 0, 'остаток смены должен уходить на подготовку балка');
+  assert.ok(fill.every(function (b) { return b.taskId === 'sort'; }));
+  assert.ok(fill.every(function (b) { return b.dest === 'bulk'; }));
+});
+
+check('никого нет — задание целиком остаётся невыполненным, но не теряется', function () {
+  var cfg = normedConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.absent = ['kris', 'eva', 'toni'];
+  day.jobs = [P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 100 })];
+  P.autoAssign(cfg, day);
+
+  assert.strictEqual(day.blocks.length, 0);
+  assert.strictEqual(day.overflow.length, 1);
+});
+
+check('распределение учитывает, кого сегодня нет', function () {
+  var cfg = normedConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.absent = ['eva'];
+  day.jobs = [P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 200, dest: 'amazon' })];
+  P.autoAssign(cfg, day);
+
+  assert.ok(day.blocks.length > 0);
+  assert.ok(day.blocks.every(function (b) { return b.staffId !== 'eva' && b.staffId !== 'aisulu'; }),
+    'работа не должна попадать на отсутствующих');
+});
+
+/* ---------- сквозной сценарий ---------- */
+
+check('сквозной день: задание → план → кто-то не вышел → пересчёт', function () {
+  var cfg = normedConfig();
+  var day = P.emptyDay(TUESDAY);
+  day.jobs = [
+    P.newJob({ taskId: 'pack', productId: 'frooties', packSize: '2lb', qty: 180, dest: 'tiktok' }),
+    P.newJob({ taskId: 'sort', productId: 'starburst', mode: 'time', duration: 150, dest: 'bulk' })
+  ];
+  P.autoAssign(cfg, day);
+  var before = P.schedule(cfg, day);
+
+  assert.ok(before.totals.plannedMin > 0);
+  assert.strictEqual(before.totals.people, 3);
+  assert.strictEqual(before.unassigned.length, 0);
+
+  var work = day.blocks.reduce(function (s, b) { return s + P.durationOf(cfg, b); }, 0);
+
+  day.absent = ['toni'];
+  P.applyAbsence(cfg, day);
+  var after = P.schedule(cfg, day);
+
+  assert.strictEqual(after.totals.people, 2, 'на месте остаются двое');
+  assert.strictEqual(after.unassigned.length, 0, 'вся работа распределена');
+  assert.strictEqual(
+    day.blocks.reduce(function (s, b) { return s + P.durationOf(cfg, b); }, 0), work,
+    'объём работы от чужого отсутствия не меняется'
+  );
+});
+
+console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');
+process.exit(failed ? 1 : 0);
