@@ -190,6 +190,62 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 .alert--warn { border-color: var(--warn); color: #78350f; background: #fffbeb; }
 .alert--info { border-color: var(--ink-mute); color: var(--ink-soft); }
 
+/* ───────── отметка прихода ───────── */
+
+/*
+ * Карточка человека — самая нажимаемая вещь на складе, поэтому она
+ * крупная и с большим запасом по площади касания. Цветная точка слева
+ * повторяет цвет человека на доске: искать себя по имени в спешке
+ * медленнее, чем по цвету.
+ */
+.clock {
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  padding: 12px 16px;
+}
+
+.clock__head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.clock__label {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.clock__hint { font-size: 12px; color: var(--muted); }
+
+.clock__people { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 10px 18px 10px 14px;
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+}
+.person__dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
+.person__body { display: flex; flex-direction: column; line-height: 1.25; }
+.person__name { font-weight: 700; font-size: 17px; }
+.person__state { font-size: 12px; color: var(--muted); }
+
+/* На смене — зелёная рамка: видно от дверей, кто уже здесь. */
+.person.is-in { border-color: var(--ok); background: #f0fdf4; }
+.person.is-in .person__state { color: var(--ok); font-weight: 600; }
+
+/* Закрыл смену — приглушённая, но не спрятанная: часы за ней остаются. */
+.person.is-out { opacity: .55; }
+
+/* Не отметился, а смена уже идёт — то, на что должен смотреть менеджер. */
+.person.is-noshow { border-color: var(--err); border-style: dashed; }
+.person.is-noshow .person__state { color: var(--err); }
+
+.person.is-off { opacity: .45; border-style: dashed; cursor: default; }
+.person:disabled { cursor: default; }
+
 /* ───────── доска ───────── */
 
 .board {

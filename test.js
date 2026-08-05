@@ -635,5 +635,156 @@ check('сквозной день: задание → план → кто-то н
   );
 });
 
+/* ---------- отметка прихода ---------- */
+
+check('до начала смены человека ждём, а не считаем прогульщиком', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];                       // смена с 09:30
+  /* 09:00 — ещё никто не дошёл до планшета, и это нормально. */
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, 9 * 60), 'expected');
+  assert.ok(P.isAvailable(kris, day, 9 * 60, cfg), 'работу на него планируем');
+});
+
+check('пауза ожидания даёт дойти до планшета', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];
+  var start = P.hhmm(kris.shift.start);
+  /* Начало смены и почти вся пауза — всё ещё ждём. */
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, start), 'expected');
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, start + P.CLOCK_IN_GRACE_MIN - 1), 'expected');
+  /* Пауза вышла — не вышел на работу. */
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, start + P.CLOCK_IN_GRACE_MIN), 'noshow');
+});
+
+check('не отметился после паузы — работа на него не планируется', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];
+  var late = P.hhmm(kris.shift.start) + P.CLOCK_IN_GRACE_MIN + 5;
+  assert.ok(!P.isAvailable(kris, day, late, cfg));
+});
+
+check('отметился — на смене, и время нажатия сохранено как есть', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];
+  var at = '2026-08-05T09:34:12.000Z';
+
+  P.clockIn(day, kris.id, at);
+  assert.strictEqual(day.attendance[kris.id].in, at, 'момент нажатия округлять нельзя — он идёт в табель');
+  var late = P.hhmm(kris.shift.start) + P.CLOCK_IN_GRACE_MIN + 5;
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, late), 'in');
+  assert.ok(P.isAvailable(kris, day, late, cfg));
+});
+
+check('второе нажатие «пришёл» не переписывает время прихода', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:30:00.000Z');
+  P.clockIn(day, 'kris', '2026-08-05T11:00:00.000Z');
+  assert.strictEqual(day.attendance.kris.in, '2026-08-05T09:30:00.000Z');
+});
+
+check('закрыл смену — из плана выпадает, отработанное считается', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];
+
+  P.clockIn(day, kris.id, '2026-08-05T09:30:00.000Z');
+  P.clockOut(day, kris.id, '2026-08-05T16:50:00.000Z');
+
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, 12 * 60), 'out');
+  assert.ok(!P.isAvailable(kris, day, 12 * 60, cfg), 'ушедшему работу не планируем');
+  assert.strictEqual(P.workedMinutes(day, kris.id), 440, '7 ч 20 мин между отметками');
+});
+
+check('незакрытая смена не даёт выдуманных часов', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockIn(day, 'kris', '2026-08-05T09:30:00.000Z');
+  assert.strictEqual(P.workedMinutes(day, 'kris'), null, 'пока не ушёл — часов нет, а не ноль');
+});
+
+check('уход нельзя отметить, не отметив приход', function () {
+  var day = P.emptyDay('2026-08-05');
+  P.clockOut(day, 'kris', '2026-08-05T16:50:00.000Z');
+  assert.ok(!day.attendance.kris, 'записи быть не должно');
+});
+
+check('приход снимает отметку менеджера об отсутствии', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var kris = cfg.staff[0];
+  day.absent = [kris.id];
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, 10 * 60), 'absent');
+
+  /* Человек всё-таки пришёл — факт с планшета важнее вчерашнего плана. */
+  P.clockIn(day, kris.id, '2026-08-05T10:00:00.000Z');
+  assert.strictEqual(P.attendanceOf(cfg, day, kris, 10 * 60), 'in');
+  assert.ok(P.isAvailable(kris, day, 10 * 60, cfg));
+});
+
+check('отпуск и увольнение отметкой не перебиваются', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  var vac = cfg.staff.filter(function (s) { return s.status === 'vacation'; })[0];
+  assert.strictEqual(P.attendanceOf(cfg, day, vac, 10 * 60), 'vacation');
+  assert.ok(!P.isAvailable(vac, day, 10 * 60, cfg));
+});
+
+check('работа неявившегося уходит остальным', function () {
+  var cfg = P.defaultConfig();
+  var day = P.materialize(cfg, P.emptyDay('2026-08-05'));
+  var kris = cfg.staff[0];
+
+  var mine = day.blocks.filter(function (b) { return b.staffId === kris.id; });
+  assert.ok(mine.length, 'для проверки нужна хотя бы одна задача на нём');
+
+  /* Не отметился — менеджер нажимает «нет на работе», план пересобирается. */
+  day.absent = [kris.id];
+  P.applyAbsence(cfg, day);
+
+  var still = day.blocks.filter(function (b) { return b.staffId === kris.id; });
+  assert.strictEqual(still.length, 0, 'на отсутствующем задач остаться не должно');
+  assert.ok(day.blocks.every(function (b) { return b.staffId || b.warn; }),
+    'задача либо у кого-то, либо помечена — потеряться она не может');
+});
+
+check('не отметился к концу паузы — его работа уходит остальным сама', function () {
+  var cfg = P.defaultConfig();
+  var day = P.materialize(cfg, P.emptyDay('2026-08-05'));
+  var kris = cfg.staff[0];
+
+  /* Остальные отметились, Крис — нет. */
+  cfg.staff.forEach(function (s) {
+    if (s.id !== kris.id && s.status === 'active') P.clockIn(day, s.id, '2026-08-05T10:00:00.000Z');
+  });
+
+  var before = day.blocks.filter(function (b) { return b.staffId === kris.id; }).length;
+  assert.ok(before > 0, 'для проверки нужна работа на Крисе');
+
+  var late = P.hhmm(kris.shift.start) + P.CLOCK_IN_GRACE_MIN + 5;
+  P.applyAbsence(cfg, day, late);
+
+  assert.strictEqual(
+    day.blocks.filter(function (b) { return b.staffId === kris.id; }).length, 0,
+    'на неявившемся задач остаться не должно');
+  assert.ok(day.blocks.every(function (b) { return b.staffId || b.warn; }),
+    'работа не должна пропасть');
+});
+
+check('пока пауза не вышла, план не трогают', function () {
+  var cfg = P.defaultConfig();
+  var day = P.materialize(cfg, P.emptyDay('2026-08-05'));
+  var kris = cfg.staff[0];
+  var before = day.blocks.filter(function (b) { return b.staffId === kris.id; }).length;
+
+  /* 09:35 — пауза ещё идёт, человек может просто не дойти до планшета. */
+  P.applyAbsence(cfg, day, P.hhmm(kris.shift.start) + 5);
+
+  assert.strictEqual(day.blocks.filter(function (b) { return b.staffId === kris.id; }).length, before,
+    'до конца паузы работу забирать нельзя');
+});
+
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');
 process.exit(failed ? 1 : 0);

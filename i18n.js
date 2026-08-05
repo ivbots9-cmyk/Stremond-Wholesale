@@ -232,6 +232,19 @@
       'sync.online': 'online', 'sync.local': 'local',
       'sync.shared': 'Shared plan · edits show on every device',
 
+      'clock.title': 'Who is at work',
+      'clock.tapToStart': 'Tap your name when you start, and again when you leave',
+      'clock.signInFirst': 'Sign in with the warehouse code to clock in',
+      'clock.in': 'at work since {time}',
+      'clock.out': 'worked {worked} · {from}–{to}',
+      'clock.expected': 'expected at {time}',
+      'clock.noshow': 'not clocked in',
+      'clock.absent': 'marked absent',
+      'clock.vacation': 'on vacation',
+      'clock.failed': 'could not save the clock-in: {error}',
+      'clock.confirmOut': 'End the shift for {name}?',
+      'clock.someoneMissing': '{n} not clocked in — their work has moved to the others',
+
       'lang.switch': 'Русский',
       'lang.switchHint': 'Switch language'
     },
@@ -440,6 +453,19 @@
       'sync.savedAt': 'сохранено {time}',
       'sync.online': 'на связи', 'sync.local': 'локально',
       'sync.shared': 'Общий план · правки видны на всех устройствах',
+
+      'clock.title': 'Кто на работе',
+      'clock.tapToStart': 'Нажмите своё имя, когда начали, и ещё раз, когда уходите',
+      'clock.signInFirst': 'Чтобы отмечаться, войдите по коду склада',
+      'clock.in': 'на смене с {time}',
+      'clock.out': 'отработано {worked} · {from}–{to}',
+      'clock.expected': 'ждём к {time}',
+      'clock.noshow': 'не отметился',
+      'clock.absent': 'отмечен отсутствующим',
+      'clock.vacation': 'в отпуске',
+      'clock.failed': 'отметка не сохранилась: {error}',
+      'clock.confirmOut': 'Закрыть смену для {name}?',
+      'clock.someoneMissing': 'не отметились: {n} — их работа ушла остальным',
 
       'lang.switch': 'English',
       'lang.switchHint': 'Сменить язык'

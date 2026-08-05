@@ -426,6 +426,106 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     assert.strictEqual(res.status, 404);
   });
 
+  /* ---------- отметка прихода ---------- */
+
+  await check('планшет отмечает приход, время ставит сервер', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    var before = Date.now();
+    var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', {
+      staffId: 'toni', action: 'in', in: '1999-01-01T00:00:00.000Z'   // подсунутое время
+    }, tablet), env);
+    assert.strictEqual(res.status, 200);
+
+    var saved = JSON.parse(state.docs['day:' + DAY].body);
+    var at = new Date(saved.attendance.toni.in).getTime();
+    assert.ok(at >= before, 'время должно быть серверное, а не из тела запроса');
+    assert.strictEqual(saved.attendance.toni.out, null);
+  });
+
+  await check('гость отметиться не может', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }), env);
+    assert.strictEqual(res.status, 403);
+  });
+
+  await check('через отметку прихода нельзя подменить план', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', {
+      staffId: 'toni',
+      action: 'in',
+      blocks: [],                       // попытка протащить свой план
+      day: { blocks: [] },
+      volumes: { hack: 1 }
+    }, tablet), env);
+
+    var saved = JSON.parse(state.docs['day:' + DAY].body);
+    assert.strictEqual(saved.blocks.length, 1, 'блоки плана меняться не должны');
+    assert.ok(!saved.volumes.hack, 'объёмы тоже');
+  });
+
+  await check('повторный приход не переписывает время', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+    var first = JSON.parse(state.docs['day:' + DAY].body).attendance.toni.in;
+
+    await new Promise(function (r) { setTimeout(r, 5); });
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+    var second = JSON.parse(state.docs['day:' + DAY].body).attendance.toni.in;
+    assert.strictEqual(second, first);
+  });
+
+  await check('уход без прихода отбивается', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'out' }, tablet), env);
+    assert.strictEqual(res.status, 409);
+  });
+
+  await check('приход и уход пишутся в журнал', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var manager = await loginAs(env, 'manager');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay, version: 0 }, manager), env);
+
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'in' }, tablet), env);
+    await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'out' }, tablet), env);
+
+    var res = await worker.fetch(req('/api/log?limit=10', { headers: { Cookie: manager } }), env);
+    var items = (await res.json()).items;
+    assert.strictEqual(items[0].action, 'attendance');
+    assert.ok(/toni → out/.test(items[0].detail), 'в журнале должно быть видно, кто и что отметил');
+    assert.ok(/toni → in/.test(items[1].detail));
+  });
+
+  await check('неизвестное действие не принимается', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+    var res = await worker.fetch(jsonReq('/api/attendance?date=' + DAY, 'POST', { staffId: 'toni', action: 'уволить' }, tablet), env);
+    assert.strictEqual(res.status, 400);
+  });
+
   /* ---------- чтение ---------- */
 
   await check('/api/state отдаёт настройки, день и роль', async function () {

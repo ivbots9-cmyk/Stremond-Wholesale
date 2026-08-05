@@ -56,6 +56,7 @@ export default {
         case '/api/config':   return await putConfig(request, env);
         case '/api/day':      return await putDay(request, env, url);
         case '/api/progress': return await postProgress(request, env, url);
+        case '/api/attendance': return await postAttendance(request, env, url);
         case '/api/login':    return await login(request, env);
         case '/api/logout':   return logout();
         case '/api/log':      return await getLog(request, env, url);
@@ -371,6 +372,54 @@ async function postProgress(request, env, url) {
   const res = await writeDoc(env, 'day:' + date, doc.body, null, role);
   await log(env, role, 'progress', date, block.taskId + ' → ' + status);
   return json({ ok: true, version: res.version });
+}
+
+/*
+ * Отметка прихода и ухода с планшета. Как и отметка выполнения, доступна
+ * самой слабой роли и трогает ровно одно поле: attendance конкретного
+ * человека. План, задание и объёмы этим запросом не поменять.
+ *
+ * Время ставит сервер, а не планшет. Часы на планшете может сбить кто
+ * угодно, а по этим отметкам потом считают зарплату.
+ */
+async function postAttendance(request, env, url) {
+  const date = String(url.searchParams.get('date') || '');
+  if (!DATE_RE.test(date)) return json({ error: 'bad date' }, 400);
+
+  const role = await roleOf(request, env);
+  if (!role) return json({ error: 'forbidden' }, 403);
+
+  const body = await readBody(request);
+  const staffId = String(body.staffId || '');
+  const action = String(body.action || '');
+  if (!staffId || ['in', 'out'].indexOf(action) < 0) {
+    return json({ error: 'bad request' }, 400);
+  }
+
+  const doc = await readDoc(env, 'day:' + date);
+  if (!doc || !doc.body) return json({ error: 'no day' }, 404);
+
+  const day = doc.body;
+  day.attendance = day.attendance || {};
+  const now = new Date().toISOString();
+  const rec = day.attendance[staffId];
+
+  if (action === 'in') {
+    /* Повторное нажатие не переписывает приход: верным остаётся первое. */
+    if (rec && rec.in && !rec.out) return json({ ok: true, attendance: rec, version: doc.version });
+    day.attendance[staffId] = { in: (rec && rec.in) || now, out: null };
+    /* Пришёл — значит уже не «отмечен отсутствующим». */
+    day.absent = (day.absent || []).filter((id) => id !== staffId);
+  } else {
+    if (!rec || !rec.in) return json({ error: 'not clocked in' }, 409);
+    if (!rec.out) rec.out = now;
+  }
+
+  /* Версию не проверяем — по той же причине, что и у отметки выполнения:
+     потерять отметку прихода хуже, чем разойтись с параллельной правкой. */
+  const res = await writeDoc(env, 'day:' + date, day, null, role);
+  await log(env, role, 'attendance', date, staffId + ' → ' + action + ' at ' + now);
+  return json({ ok: true, attendance: day.attendance[staffId], version: res.version });
 }
 
 async function getLog(request, env, url) {

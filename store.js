@@ -171,7 +171,14 @@
 
   function saveDay(day, reason) {
     if (state.mode === 'local') {
-      if (!can('manager')) return Promise.resolve({ error: 'forbidden' });
+      /*
+       * Те же права, что на сервере: править существующий день может
+       * менеджер, но создать сегодняшний из шаблона разрешено и планшету.
+       * Иначе утром некуда писать отметки прихода и выполнения, а
+       * локальный режим вёл бы себя не так, как рабочий.
+       */
+      var exists = lsGet(LS_DAY + day.date, null);
+      if (!can(exists ? 'manager' : 'tablet')) return Promise.resolve({ error: 'forbidden' });
       return Promise.resolve(lsSet(LS_DAY + day.date, day) ? { ok: true } : { error: 'local write failed' });
     }
     return api('/api/day?date=' + encodeURIComponent(day.date), {
@@ -199,6 +206,30 @@
     return api('/api/progress?date=' + encodeURIComponent(date), {
       method: 'POST',
       body: JSON.stringify({ blockId: blockId, status: status, doneQty: doneQty })
+    }).then(readResult).then(function (r) {
+      if (r.version) state.dayVersion = r.version;
+      return r;
+    });
+  }
+
+  /*
+   * Отметка прихода и ухода. На сервере время ставит сервер — здесь оно
+   * не передаётся вовсе, чтобы не было соблазна доверять часам планшета.
+   */
+  function attendance(date, staffId, action) {
+    if (state.mode === 'local') {
+      if (!can('tablet')) return Promise.resolve({ error: 'forbidden' });
+      var day = lsGet(LS_DAY + date, null);
+      if (!day) return Promise.resolve({ error: 'no day' });
+      var now = new Date().toISOString();
+      if (action === 'in') WHPlan.clockIn(day, staffId, now);
+      else WHPlan.clockOut(day, staffId, now);
+      lsSet(LS_DAY + date, day);
+      return Promise.resolve({ ok: true, attendance: (day.attendance || {})[staffId] });
+    }
+    return api('/api/attendance?date=' + encodeURIComponent(date), {
+      method: 'POST',
+      body: JSON.stringify({ staffId: staffId, action: action })
     }).then(readResult).then(function (r) {
       if (r.version) state.dayVersion = r.version;
       return r;
@@ -262,6 +293,7 @@
     loadDay: loadDay,
     saveDayAt: saveDayAt,
     progress: progress,
+    attendance: attendance,
     login: login,
     logout: logout,
     history: history,

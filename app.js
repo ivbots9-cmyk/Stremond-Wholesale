@@ -187,9 +187,19 @@
   }
 
   function recompute() {
+    /* Время передаём только для сегодняшнего дня: у вчерашнего плана
+       «не отметился к 09:50» смысла не имеет. */
+    var now = isToday() ? minutesNow() : null;
     P.applyVolumes(app.config, app.day);
-    P.applyAbsence(app.config, app.day);
-    app.view = P.schedule(app.config, app.day);
+    P.applyAbsence(app.config, app.day, now);
+    app.view = P.schedule(app.config, app.day, now);
+  }
+
+  /* Часы идут — неявка проявляется сама, без нажатий. Поэтому раз в
+     полминуты перерисовываем и экран прихода тоже. */
+  function tickAttendance() {
+    if (!isToday()) return;
+    renderClock();
   }
 
   function minutesNow() {
@@ -199,7 +209,7 @@
 
   function isToday() { return app.date === P.todayISO(); }
 
-  function tickClock() { if (isToday()) renderBoard(); }
+  function tickClock() { if (isToday()) { renderBoard(); tickAttendance(); } }
 
   /* ============================================================
      Отрисовка
@@ -207,10 +217,131 @@
 
   function render() {
     renderHeader();
+    renderClock();
     renderBar();
     renderAlerts();
     renderBoard();
     renderFoot();
+  }
+
+  /*
+   * Экран прихода. Самая нажимаемая вещь на складе, поэтому стоит первой
+   * и состоит из крупных карточек: подошёл, нашёл себя по цвету, нажал.
+   *
+   * Нажатие второй раз закрывает смену — но с подтверждением: случайно
+   * закрытая смена стоит человеку часов в табеле.
+   */
+  function renderClock() {
+    var box = $('clock-people');
+    var now = isToday() ? minutesNow() : null;
+    box.innerHTML = '';
+
+    var may = S.can('tablet');
+    $('clock-hint').textContent = may ? T.t('clock.tapToStart') : T.t('clock.signInFirst');
+
+    var missing = 0;
+
+    (app.config.staff || []).forEach(function (s) {
+      if (s.status === 'left') return;
+
+      var st = P.attendanceOf(app.config, app.day, s, now);
+      var rec = (app.day.attendance || {})[s.id] || {};
+      if (st === 'noshow') missing++;
+
+      var card = el('button', 'person is-' + st);
+      card.type = 'button';
+
+      var dot = el('span', 'person__dot');
+      dot.style.background = s.color || '#64748b';
+      card.appendChild(dot);
+
+      var body = el('div', 'person__body');
+      body.appendChild(el('span', 'person__name', s.name));
+      body.appendChild(el('span', 'person__state', clockState(s, st, rec)));
+      card.appendChild(body);
+
+      /* Отпуск и ручное отсутствие с планшета не снимаются: это решение
+         менеджера, и трогать его должен он же. */
+      var locked = st === 'vacation' || st === 'left';
+      card.disabled = !may || locked;
+      if (locked) card.classList.add('is-off');
+
+      card.onclick = function () { toggleClock(s, st); };
+      box.appendChild(card);
+    });
+
+    var hint = $('clock-hint');
+    if (missing && may) hint.textContent = T.t('clock.someoneMissing', { n: missing });
+  }
+
+  function clockState(staff, st, rec) {
+    if (st === 'vacation') return T.t('clock.vacation');
+    if (st === 'absent') return T.t('clock.absent');
+    if (st === 'noshow') return T.t('clock.noshow');
+    if (st === 'expected') return T.t('clock.expected', { time: P.fmt(P.hhmm(shiftStartOf(staff))) });
+    if (st === 'in') return T.t('clock.in', { time: hhmmOf(rec.in) });
+    if (st === 'out') {
+      var worked = P.workedMinutes(app.day, staff.id);
+      return T.t('clock.out', {
+        worked: worked == null ? '—' : P.human(worked),
+        from: hhmmOf(rec.in),
+        to: hhmmOf(rec.out)
+      });
+    }
+    return '';
+  }
+
+  function shiftStartOf(staff) {
+    return (staff.shift && staff.shift.start) || (app.config.shift && app.config.shift.start) || '09:00';
+  }
+
+  /* Момент отметки хранится в UTC, показываем в часовом поясе планшета. */
+  function hhmmOf(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    return P.fmt(d.getHours() * 60 + d.getMinutes());
+  }
+
+  /*
+   * Дождаться, пока день доедет до хранилища. Утром между открытием
+   * страницы и первым нажатием проходит секунда, а день в этот момент
+   * ещё только создаётся из шаблона — отметка прихода приходила бы в
+   * несуществующий день и терялась.
+   */
+  function flushSave() {
+    if (!app.dirty && !app.saving) return Promise.resolve();
+    clearTimeout(saveTimer);
+    return new Promise(function (resolve) {
+      var tries = 0;
+      (function wait() {
+        if ((!app.dirty && !app.saving) || tries++ > 60) return resolve();
+        if (app.dirty && !app.saving) scheduleSave('day created from template', true);
+        setTimeout(wait, 100);
+      })();
+    });
+  }
+
+  function toggleClock(staff, st) {
+    if (!S.can('tablet')) {
+      setSync(T.t('clock.signInFirst'), true);
+      return;
+    }
+    var leaving = st === 'in';
+    if (leaving && !confirm(T.t('clock.confirmOut', { name: staff.name }))) return;
+
+    flushSave().then(function () {
+      return S.attendance(app.date, staff.id, leaving ? 'out' : 'in');
+    }).then(function (r) {
+      if (r && r.error) {
+        setSync(T.t('clock.failed', { error: r.error }), true);
+        return;
+      }
+      /* Перечитываем день целиком: приход меняет расстановку задач, и
+         догадываться о новом плане по локальной копии не стоит. */
+      return load();
+    }).catch(function (e) {
+      setSync(T.t('clock.failed', { error: e.message || e }), true);
+    });
   }
 
   function renderHeader() {
