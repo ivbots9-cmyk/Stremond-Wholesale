@@ -12,12 +12,13 @@ compatibility_date = "2025-01-01"
 directory = "."
 binding = "ASSETS"
 
-# database_id подставляется после создания базы:
-#   npx wrangler d1 create warehouse
+# Не секрет: без ключей от аккаунта этот id ничего не открывает.
 [[d1_databases]]
 binding = "DB"
 database_name = "warehouse"
-database_id = "ЗАМЕНИТЬ_НА_ID_ИЗ_wrangler_d1_create"
+database_id = "881a9ba4-cf90-4d7d-b044-82ca2b6bc69b"
 
-# PIN администратора живёт в секретах, не здесь:
-#   npx wrangler secret put WH_PIN 
+# Коды доступа живут в секретах, не здесь — по одному на роль:
+#   npx wrangler secret put WH_PIN_TABLET
+#   npx wrangler secret put WH_PIN_MANAGER
+#   npx wrangler secret put WH_PIN_ADMIN
