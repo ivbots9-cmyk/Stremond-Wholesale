@@ -256,7 +256,7 @@
         { id: 'kris', name: 'Chris', color: '#c2410c', status: 'active', skills: [], shift: { start: '09:30', end: '16:50' } },
         { id: 'aisulu', name: 'Aisulu', color: '#7c3aed', status: 'vacation', skills: [], shift: { start: '09:30', end: '16:50' } },
         { id: 'eva', name: 'Eva', color: '#0f9d76', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } },
-        { id: 'toni', name: 'Toni', color: '#2f6fed', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } }
+        { id: 'toni', name: 'Tony', color: '#2f6fed', status: 'active', skills: [], shift: { start: '10:00', end: '16:50' } }
       ],
 
       /*
@@ -361,6 +361,7 @@
       tasks: [
         {
           id: 'sort', title: 'Colour sorting', mode: 'time', unit: 'box', sortOnly: true,
+          prefer: ['toni', 'eva'],
           minPerUnit: 15, priority: 1, color: '#f59e0b', sitting: true,
           byProduct: {
             /* подтверждено: 4 коробки в час */
@@ -376,19 +377,23 @@
         },
         {
           id: 'seal', title: 'Sealing', mode: 'volume', unit: 'bag',
+          prefer: ['toni'],
           minPerUnit: 0.5, priority: 1, color: '#0ea5e9',
           byProduct: {}   // уточнить
         },
         {
           id: 'box', title: 'Boxing', mode: 'volume', unit: 'box',
+          prefer: ['kris'],
           minPerUnit: 5, priority: 2, color: '#0d9488', byProduct: {}   // уточнить
         },
         {
           id: 'pallet', title: 'Pallet building', mode: 'volume', unit: 'box',
+          onlyStaff: ['kris', 'toni'],
           minPerUnit: 2, priority: 2, color: '#0f766e', byProduct: {}   // уточнить
         },
         {
           id: 'orders', title: 'Order picking', mode: 'volume', unit: 'order',
+          onlyStaff: ['aisulu', 'eva'], prefer: ['aisulu', 'eva'],
           minPerUnit: 2, priority: 1, color: '#e11d48', byProduct: {}   // уточнить
         },
         {
@@ -1041,9 +1046,72 @@
   /* Умеет ли человек эту задачу. Пустой список навыков = универсал:
      на складе из четырёх человек проще отмечать исключения, чем
      заполнять матрицу «кто что умеет» целиком. */
-  function canDo(staff, taskId) {
+  /*
+   * Может ли человек взять эту работу.
+   *
+   * Два разных механизма, и путать их нельзя:
+   *
+   *   onlyStaff у задачи — ЖЁСТКОЕ ограничение. «Паллеты собирают только
+   *     Крис и Тони» — это про физику, а не про предпочтения, и система
+   *     не имеет права предложить иначе.
+   *   skills у человека — ограничение с другой стороны: «этому давать
+   *     только вот это». Пустой список = универсал.
+   *
+   * prefer (ниже) к допуску отношения не имеет: он лишь меняет порядок
+   * среди тех, кому и так можно.
+   */
+  /*
+   * Жёсткий допуск: пускает ли задача этого человека вообще. Если нет —
+   * работа не уйдёт к нему никогда, даже когда больше некому. Ставится
+   * там, где дело не в предпочтениях: паллеты собирают только Крис и
+   * Тони, на ордерах сидят только Ева и Айсулу.
+   */
+  function allowedFor(config, staff, taskId) {
+    if (!staff) return false;
+    var task = config && (config.tasks || []).filter(function (t) { return t.id === taskId; })[0];
+    if (!task || !task.onlyStaff || !task.onlyStaff.length) return true;
+    return task.onlyStaff.indexOf(staff.id) >= 0;
+  }
+
+  /*
+   * Умеет ли человек эту работу. В отличие от allowedFor это мягкое:
+   * когда взять больше некому, работу всё равно отдадут — но пометят
+   * «задача вне навыков», чтобы это было видно.
+   */
+  function canDo(staff, taskId, config) {
+    if (!staff) return false;
+    if (!allowedFor(config, staff, taskId)) return false;
     if (!staff.skills || !staff.skills.length) return true;
     return staff.skills.indexOf(taskId) >= 0;
+  }
+
+  /*
+   * Мягкое предпочтение: кто обычно делает эту работу. Влияет только на
+   * очерёдность — если предпочитаемого нет или он занят, работа уходит
+   * другому молча, без предупреждений.
+   *
+   * Так система помогает, а не командует: расстановку сотрудники
+   * выработали сами, и переучивать их она не должна.
+   */
+  function prefers(config, staffId, taskId) {
+    var task = (config.tasks || []).filter(function (t) { return t.id === taskId; })[0];
+    return Boolean(task && task.prefer && task.prefer.indexOf(staffId) >= 0);
+  }
+
+  /*
+   * Насколько сильно предпочтение. Это не приоритет, а фора в минутах:
+   * пока нагрузка примерно равна, работа идёт к тому, кто её обычно
+   * делает; как только он загружен на этот запас больше остальных —
+   * уходит к другому.
+   *
+   * Без такой границы предпочитаемый забирал бы всю работу своего типа
+   * за день, а они как раз стараются делить процессы поровну, чтобы
+   * никто не обижался.
+   */
+  var PREFER_BONUS_MIN = 45;
+
+  function preferBonus(config, staffId, taskId) {
+    return prefers(config, staffId, taskId) ? PREFER_BONUS_MIN : 0;
   }
 
   /* Важность блока: направление важнее операции — «на Amazon» режут
@@ -1121,10 +1189,29 @@
     });
 
     orphans.forEach(function (b) {
-      var skilled = people.filter(function (s) { return canDo(s, b.taskId); });
-      var pool = skilled.length ? skilled : people;
+      /*
+       * Сначала жёсткий допуск: кого задача не пускает, тому не отдадим
+       * ни при каких обстоятельствах. Если таких не осталось — работа
+       * висит непереданной, и это честнее, чем нарушить ограничение.
+       */
+      var allowed = people.filter(function (s) { return allowedFor(config, s, b.taskId); });
+      if (!allowed.length) {
+        b.fromStaffId = b.fromStaffId || b.staffId || null;
+        b.staffId = null;
+        b.warn = 'nobody';
+        return;
+      }
+
+      /* Дальше навыки — мягко: некому по навыкам, отдаём всё равно, но
+         с пометкой. */
+      var skilled = allowed.filter(function (s) { return canDo(s, b.taskId, config); });
+      var pool = skilled.length ? skilled : allowed;
       var pick = pool.reduce(function (best, s) {
-        return load[s.id] < load[best.id] ? s : best;
+        /* Та же фора, только со стороны нагрузки: у предпочитаемого она
+           считается меньше на запас. */
+        var mine = load[s.id] - preferBonus(config, s.id, b.taskId);
+        var theirs = load[best.id] - preferBonus(config, best.id, b.taskId);
+        return mine < theirs ? s : best;
       }, pool[0]);
 
       b.fromStaffId = b.fromStaffId || b.staffId || null;
@@ -1356,7 +1443,7 @@
       var guard = 0;
       while (left > 0 && guard++ < 200) {
         var pool = people.filter(function (s) {
-          if (!canDo(s, job.taskId)) return false;
+          if (!canDo(s, job.taskId, config)) return false;
           var room = roomFor(s);
           if (room <= 0) return false;
           /* На дробную единицу работу не режем: если у человека не
@@ -1365,13 +1452,25 @@
         });
         if (!pool.length) break;
 
-        /* Самый свободный; при равенстве — тот, кто не делал эту же
-           работу последним, чтобы не сажать человека на одно и то же
-           весь день. */
+        /*
+         * Кому отдать. По порядку важности:
+         *
+         *   1. кто обычно это делает — мягкое предпочтение;
+         *   2. самый свободный;
+         *   3. кто не делал эту же работу последним, чтобы не сажать
+         *      человека на одно и то же весь день.
+         *
+         * Предпочтение стоит первым, но оно НЕ фильтр: если такого
+         * человека сегодня нет или он занят, он просто не попал в pool,
+         * и работа уходит следующему — без предупреждений и без дырки
+         * в плане.
+         */
         var pick = pool.reduce(function (best, s) {
-          var free = cap[s.id] - load[s.id];
-          var bestFree = cap[best.id] - load[best.id];
+          /* Свободное время плюс фора тому, кто это обычно делает. */
+          var free = cap[s.id] - load[s.id] + preferBonus(config, s.id, job.taskId);
+          var bestFree = cap[best.id] - load[best.id] + preferBonus(config, best.id, job.taskId);
           if (free !== bestFree) return free > bestFree ? s : best;
+
           var sRepeats = lastTask[s.id] === job.taskId;
           var bestRepeats = lastTask[best.id] === job.taskId;
           if (sRepeats !== bestRepeats) return sRepeats ? best : s;
@@ -1428,7 +1527,7 @@
     people.forEach(function (s) {
       var free = cap[s.id] - load[s.id];
       /* Меньше получаса добивать нечем — это не работа, а обрывок. */
-      if (free < 30 || !canDo(s, fillId)) return;
+      if (free < 30 || !canDo(s, fillId, config)) return;
 
       var product = defaultSortProduct(config);
       day.blocks.push(blockFrom({
@@ -1699,6 +1798,9 @@
     drift: drift,
     CLOCK_IN_GRACE_MIN: CLOCK_IN_GRACE_MIN,
     canDo: canDo,
+    allowedFor: allowedFor,
+    prefers: prefers,
+    PREFER_BONUS_MIN: PREFER_BONUS_MIN,
     priorityOf: priorityOf,
     destOf: destOf,
     shiftOf: shiftOf,

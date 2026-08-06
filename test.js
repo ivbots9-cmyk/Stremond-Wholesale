@@ -1203,5 +1203,89 @@ check('без данных по коробке количество не выд�
   assert.strictEqual(P.qtyInNormUnit(cfg, b), 7, 'лучше посчитать по введённому, чем угадать множитель');
 });
 
+/* ---------- допуск и предпочтения ---------- */
+
+check('паллеты не уходят тем, кому нельзя', function () {
+  var cfg = P.defaultConfig();
+  var eva = cfg.staff.filter(function (s) { return s.id === 'eva'; })[0];
+  var aisulu = cfg.staff.filter(function (s) { return s.id === 'aisulu'; })[0];
+  var kris = cfg.staff.filter(function (s) { return s.id === 'kris'; })[0];
+  var toni = cfg.staff.filter(function (s) { return s.id === 'toni'; })[0];
+
+  assert.ok(!P.allowedFor(cfg, eva, 'pallet'), 'Еве паллеты не предлагаем');
+  assert.ok(!P.allowedFor(cfg, aisulu, 'pallet'));
+  assert.ok(P.allowedFor(cfg, kris, 'pallet'));
+  assert.ok(P.allowedFor(cfg, toni, 'pallet'));
+});
+
+check('ордера остаются за Айсулу и Евой', function () {
+  var cfg = P.defaultConfig();
+  var byId = {};
+  cfg.staff.forEach(function (s) { byId[s.id] = s; });
+
+  assert.ok(P.allowedFor(cfg, byId.aisulu, 'orders'));
+  assert.ok(P.allowedFor(cfg, byId.eva, 'orders'));
+  assert.ok(!P.allowedFor(cfg, byId.kris, 'orders'), 'Крис на ордера не ставится');
+  assert.ok(!P.allowedFor(cfg, byId.toni, 'orders'));
+});
+
+check('распределение не отдаёт паллеты женщинам, даже если больше некому', function () {
+  var cfg = P.defaultConfig();
+  /* На смене только Ева — паллеты собрать некому. */
+  cfg.staff.forEach(function (s) { if (s.id !== 'eva') s.status = 'left'; });
+
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ taskId: 'pallet', mode: 'volume', qty: 28, productId: 'jolly', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+
+  var pallets = (day.blocks || []).filter(function (b) { return b.taskId === 'pallet'; });
+  assert.strictEqual(pallets.length, 0, 'ограничение важнее, чем закрыть задачу любой ценой');
+  assert.ok((day.overflow || []).some(function (j) { return j.taskId === 'pallet'; }),
+    'но работа не пропадает — она видна как невыполненная');
+});
+
+check('перераспределение тоже не нарушает жёсткий допуск', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.blocks = [{ id: 'p1', staffId: 'toni', taskId: 'pallet', mode: 'volume', qty: 28, status: 'planned' }];
+
+  /* Тони и Криса нет — передать паллету некому. */
+  day.absent = ['toni', 'kris'];
+  P.applyAbsence(cfg, day);
+
+  assert.strictEqual(day.blocks[0].staffId, null, 'работа висит непереданной');
+  assert.strictEqual(day.blocks[0].warn, 'nobody');
+});
+
+check('предпочтение сдвигает выбор, но не забирает всю работу', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  /* Силинг предпочитает Тони. Работы на четыре часа — на одного это
+     слишком много, и часть обязана уйти Крису. */
+  cfg.staff.forEach(function (s) { if (s.id !== 'kris' && s.id !== 'toni') s.status = 'left'; });
+  day.jobs = [P.newJob({ taskId: 'seal', mode: 'time', duration: 240 })];
+  P.autoAssign(cfg, day);
+
+  var byStaff = {};
+  (day.blocks || []).forEach(function (b) {
+    byStaff[b.staffId] = (byStaff[b.staffId] || 0) + P.durationOf(cfg, b);
+  });
+
+  assert.ok(byStaff.toni > 0, 'предпочитаемый получает работу');
+  assert.ok(byStaff.kris > 0, 'но не всю — иначе это уже не предпочтение, а расписание');
+  assert.ok(byStaff.toni >= byStaff.kris, 'при равных условиях перевес у того, кто обычно это делает');
+});
+
+check('предпочтение не мешает, когда предпочитаемого нет', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  cfg.staff.forEach(function (s) { if (s.id !== 'kris') s.status = 'left'; });
+  day.jobs = [P.newJob({ taskId: 'seal', mode: 'time', duration: 60 })];
+  P.autoAssign(cfg, day);
+
+  assert.ok((day.blocks || []).some(function (b) { return b.staffId === 'kris'; }),
+    'работа уходит молча, без предупреждений о нарушенном предпочтении');
+});
+
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');
 process.exit(failed ? 1 : 0);

@@ -290,32 +290,30 @@
    * Кнопки — прямые переходы. Своя ссылка у того, чья очередь; рядом
    * общие сервисы, чтобы не искать их в браузере.
    */
+  /*
+   * Музыка — просто кнопки перехода, без очереди и без «чья сейчас
+   * очередь». Кто когда переключает, они договариваются сами и давно;
+   * система, которая начнёт это распределять, будет выглядеть надзором
+   * там, где его никто не просил.
+   */
   function renderMusicBar() {
     var box = $('music');
-    var turn = P.musicTurn(app.config, app.day, new Date().toISOString());
-    var services = (app.config.rules && app.config.rules.musicServices) || DEFAULT_SERVICES;
-
-    var line = $('music-turn');
     var links = $('music-links');
     links.innerHTML = '';
-    line.innerHTML = '';
+    $('music-turn').textContent = T.t('music.title');
 
-    if (turn) {
-      var who = el('b', null, turn.current.name);
-      line.appendChild(document.createTextNode(T.t('music.now', { name: '' })));
-      line.appendChild(who);
-      line.appendChild(el('span', null,
-        ' · ' + T.t('music.leftShort', { left: P.human(turn.minutesLeft) }) +
-        (turn.queue.length > 1 ? ' · ' + T.t('music.nextShort', { name: turn.next.name }) : '')));
+    /* Свои ссылки — у тех, кто сегодня на смене: чужой плейлист в
+       списке только мешает. */
+    (app.config.staff || []).forEach(function (st) {
+      if (!st.musicUrl || st.status === 'left') return;
+      if (!P.openSession((app.day.attendance || {})[st.id])) return;
+      var b = el('button', 'is-turn', st.name);
+      b.type = 'button';
+      b.onclick = function () { window.open(st.musicUrl, '_blank', 'noopener'); };
+      links.appendChild(b);
+    });
 
-      var mine = el('button', 'is-turn', turn.current.name);
-      mine.type = 'button';
-      mine.onclick = function () { window.open(turn.current.musicUrl, '_blank', 'noopener'); };
-      links.appendChild(mine);
-    } else {
-      line.appendChild(el('span', null, T.t('music.nobody')));
-    }
-
+    var services = (app.config.rules && app.config.rules.musicServices) || DEFAULT_SERVICES;
     services.forEach(function (svc) {
       if (!svc.url) return;
       var b = el('button', '', svc.title);
@@ -324,7 +322,7 @@
       links.appendChild(b);
     });
 
-    box.hidden = !turn && !services.length;
+    box.hidden = !links.childNodes.length;
   }
 
   /* Сервисы, которыми они пользуются. Правятся в настройках. */
@@ -447,36 +445,8 @@
   function renderMusic(staff) {
     var box = $('who-music');
     box.innerHTML = '';
-
-    var turn = P.musicTurn(app.config, app.day, new Date().toISOString());
-    var mine = staff.musicUrl;
-
-    /* Ни очереди, ни своей ссылки — блок не показываем вовсе, чтобы окно
-       не обрастало пустыми разделами. */
-    if (!turn && !mine) { box.hidden = true; return; }
+    if (!staff.musicUrl) { box.hidden = true; return; }
     box.hidden = false;
-
-    if (turn) {
-      var isMine = turn.current.id === staff.id;
-      var line = el('p');
-      if (isMine) {
-        line.appendChild(el('b', null, T.t('music.yourTurn', { name: staff.name })));
-      } else {
-        line.innerHTML = '';
-        line.appendChild(document.createTextNode(
-          T.t('music.turnOf', { name: turn.current.name, left: P.human(turn.minutesLeft) })));
-      }
-      box.appendChild(line);
-
-      if (turn.queue.length > 1) {
-        box.appendChild(el('p', 'muted', T.t('music.next', { name: turn.next.name })));
-      }
-
-      box.appendChild(musicButton(turn.current, isMine));
-      return;
-    }
-
-    /* Очереди нет (никто ещё не отметился), но своя ссылка есть. */
     box.appendChild(musicButton(staff, true));
   }
 
@@ -1824,23 +1794,6 @@
     paidWrap.appendChild(el('span', null, T.t('setup.paidBreaks')));
     box.appendChild(paidWrap);
     box.appendChild(el('p', 'muted', T.t('setup.paidBreaksHint')));
-
-    /* Музыка — свойство смены: очередь идёт по тем, кто сегодня вышел. */
-    box.appendChild(el('h2', null, T.t('music.title')));
-    var turnWrap = el('label', 'field');
-    turnWrap.appendChild(el('span', null, T.t('music.turnLength')));
-    var turnMin = document.createElement('input');
-    turnMin.type = 'number';
-    turnMin.min = '15';
-    turnMin.step = '15';
-    turnMin.value = (app.draftConfig.rules && app.draftConfig.rules.musicTurnMin) || 120;
-    turnMin.onchange = function () {
-      app.draftConfig.rules = app.draftConfig.rules || {};
-      app.draftConfig.rules.musicTurnMin = Math.max(15, Number(turnMin.value) || 120);
-    };
-    turnWrap.appendChild(turnMin);
-    box.appendChild(turnWrap);
-    box.appendChild(el('p', 'muted', T.t('music.turnLengthHint')));
 
     renderAccessSection(box);
   }
