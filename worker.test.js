@@ -649,6 +649,77 @@ var sampleDay = { date: DAY, blocks: [{ id: 'b1', staffId: 'toni', taskId: 'pack
     assert.strictEqual(rec.sessions[0].in, '2026-08-04T09:00:00.000Z', 'старый отрезок сохранён');
   });
 
+  /* ---------- общая работа ---------- */
+
+  var sharedDay = {
+    date: DAY,
+    blocks: [{ id: 's1', staffId: null, shared: true, taskId: 'pack', status: 'planned', doneQty: 0 }],
+    absent: [], volumes: {}
+  };
+
+  await check('сотрудник берёт общую работу себе', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sharedDay }, tablet), env);
+
+    var res = await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'toni' }, tablet), env);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(JSON.parse(state.docs['day:' + DAY].body).blocks[0].staffId, 'toni');
+  });
+
+  await check('занятую работу второй не перехватит', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sharedDay }, tablet), env);
+    await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'toni' }, tablet), env);
+
+    var res = await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'eva' }, tablet), env);
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual((await res.json()).by, 'toni');
+    assert.strictEqual(JSON.parse(state.docs['day:' + DAY].body).blocks[0].staffId, 'toni',
+      'у первого её не отобрали');
+  });
+
+  await check('через взятие работы нельзя тронуть чужой блок', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    /* Обычный блок, назначенный менеджером, общим не помечен. */
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sampleDay }, tablet), env);
+
+    var res = await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 'b1', staffId: 'eva' }, tablet), env);
+    assert.strictEqual(res.status, 409, 'переназначать чужую работу этим запросом нельзя');
+    assert.strictEqual(JSON.parse(state.docs['day:' + DAY].body).blocks[0].staffId, 'toni');
+  });
+
+  await check('взял по ошибке — вернул, но только пока не начал', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sharedDay }, tablet), env);
+    await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'toni' }, tablet), env);
+
+    var back = await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'toni', release: true }, tablet), env);
+    assert.strictEqual(back.status, 200);
+    assert.strictEqual(JSON.parse(state.docs['day:' + DAY].body).blocks[0].staffId, null);
+
+    await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'toni' }, tablet), env);
+    await worker.fetch(jsonReq('/api/progress?date=' + DAY, 'POST', { blockId: 's1', status: 'active' }, tablet), env);
+    var late = await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'toni', release: true }, tablet), env);
+    assert.strictEqual(late.status, 409, 'замер уже идёт — обнулять его нельзя');
+  });
+
+  await check('гость работу не берёт', async function () {
+    var state = freshState();
+    var env = fakeEnv(state);
+    var tablet = await loginAs(env, 'tablet');
+    await worker.fetch(jsonReq('/api/day?date=' + DAY, 'PUT', { day: sharedDay }, tablet), env);
+    var res = await worker.fetch(jsonReq('/api/claim?date=' + DAY, 'POST', { blockId: 's1', staffId: 'toni' }), env);
+    assert.strictEqual(res.status, 403);
+  });
+
   /* ---------- чтение ---------- */
 
   await check('/api/state отдаёт настройки, день и роль', async function () {

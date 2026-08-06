@@ -470,7 +470,6 @@
 
     if (!items.length) {
       box.appendChild(el('p', 'muted', T.t('lane.noTasks')));
-      return;
     }
 
     items.forEach(function (item) {
@@ -504,6 +503,54 @@
 
       row.appendChild(act);
       box.appendChild(row);
+    });
+
+    renderWhoAvailable(box, staff);
+  }
+
+  /*
+   * Свободная работа в окне сотрудника. Взять её можно только отсюда —
+   * это единственное место, где понятно, кто именно нажимает: на общей
+   * доске получилась бы кнопка «взял кто-то».
+   */
+  function renderWhoAvailable(box, staff) {
+    var free = sharedBlocks().filter(function (b) {
+      /* Чего человеку нельзя по допуску, того ему и не предлагаем. */
+      return P.allowedFor(app.config, staff, b.taskId);
+    });
+    if (!free.length) return;
+
+    box.appendChild(el('div', 'who__label', T.t('who.available')));
+
+    free.forEach(function (b) {
+      var row = el('div', 'who-task');
+      var head = el('div', 'who-task__head');
+      head.appendChild(el('b', null, P.blockTitle(app.config, b)));
+      if (b.stepsTotal) {
+        head.appendChild(el('span', 'muted', T.t('shared.step', { n: b.stepNo, total: b.stepsTotal })));
+      }
+      row.appendChild(head);
+
+      var act = el('div', 'who-task__act');
+      var take = el('button', 'is-active', T.t('shared.take'));
+      take.type = 'button';
+      take.onclick = function () { claimWork(staff, b, false); };
+      act.appendChild(take);
+      row.appendChild(act);
+      box.appendChild(row);
+    });
+  }
+
+  function claimWork(staff, block, release) {
+    flushSave().then(function () {
+      return S.claim(app.date, block.id, staff.id, release);
+    }).then(function (r) {
+      if (r && r.error) {
+        setSync(r.error === 'taken' ? T.t('shared.taken') : T.t('clock.failed', { error: r.error }), true);
+      }
+      return load();
+    }).catch(function (e) {
+      setSync(T.t('clock.failed', { error: e.message || e }), true);
     });
   }
 
@@ -678,9 +725,70 @@
       board.appendChild(renderLane(lane));
     });
 
+    /* Свободная работа стоит первой колонкой: с неё начинают день. */
+    var shared = sharedBlocks();
+    if (shared.length) board.insertBefore(renderShared(shared), board.firstChild);
+
     if (app.view.unassigned.length) {
       board.appendChild(renderOrphans());
     }
+  }
+
+  function sharedBlocks() {
+    return (app.day.blocks || []).filter(function (b) { return b.shared && !b.staffId; });
+  }
+
+  /*
+   * Колонка общей работы. Имён здесь нет намеренно: план говорит, что
+   * надо сделать, а кто на чём встанет — они решают сами, и делают это
+   * лучше любого расчёта.
+   */
+  function renderShared(blocks) {
+    var node = el('section', 'lane lane--shared');
+
+    var head = el('div', 'lane__head');
+    var name = el('div', 'lane__name');
+    name.appendChild(el('b', null, T.t('shared.title')));
+    name.appendChild(el('span', null, T.t('shared.hint')));
+    head.appendChild(name);
+    node.appendChild(head);
+
+    var body = el('div', 'lane__body');
+
+    /* Шаги одной партии идут подряд и подписаны «шаг 2 из 4»: это одна
+       работа, разложенная по этапам, а не четыре отдельные. */
+    blocks.slice().sort(function (a, b) {
+      if (a.batchId !== b.batchId) return a.batchId < b.batchId ? -1 : 1;
+      return (a.stepNo || 0) - (b.stepNo || 0);
+    }).forEach(function (b) {
+      body.appendChild(renderSharedCard(b));
+    });
+
+    node.appendChild(body);
+    return node;
+  }
+
+  function renderSharedCard(b) {
+    var card = el('article', 'task task--shared');
+
+    card.appendChild(el('div', 'task__title', P.blockTitle(app.config, b)));
+
+    var meta = el('div', 'task__meta');
+    if (b.stepsTotal) {
+      meta.appendChild(el('span', 'tag', T.t('shared.step', { n: b.stepNo, total: b.stepsTotal })));
+    }
+    var carrier = P.carrierOf(app.config, b);
+    if (carrier) meta.appendChild(el('span', 'tag tag--carrier', carrier));
+    if (b.qty) {
+      meta.appendChild(el('span', 'tag tag--qty',
+        b.qty + ' ' + P.plural(b.qty, b.qtyUnit === 'box' ? 'box' : P.unitFor(app.config, b))));
+    }
+    card.appendChild(meta);
+
+    /* Взять можно только из своего окна: там понятно, кто нажимает.
+       На общей доске это была бы кнопка «взял кто-то». */
+    card.appendChild(el('p', 'muted', T.t('who.available')));
+    return card;
   }
 
   function renderLane(lane) {
@@ -1128,17 +1236,33 @@
     }
 
     jobs.forEach(function (job, i) {
+      /*
+       * «Полный цикл» — одна строка вместо четырёх. Отдельным пунктом в
+       * том же списке, а не галочкой сбоку: менеджер выбирает, что надо
+       * сделать, и «весь цикл» — такой же ответ, как «только силинг».
+       */
       var task = document.createElement('select');
-      fillSelect(task, app.config.tasks.map(function (t) { return { value: t.id, title: t.title }; }), job.taskId);
+      fillSelect(task, [{ value: '*combined', title: T.t('jobs.combined') }].concat(
+        app.config.tasks.map(function (t) { return { value: t.id, title: t.title }; })
+      ), job.combined ? '*combined' : job.taskId);
       task.onchange = function () {
-        job.taskId = task.value;
-        job.mode = P.taskOf(app.config, job).mode;
+        if (task.value === '*combined') {
+          job.combined = true;
+          job.mode = 'volume';
+        } else {
+          job.combined = false;
+          job.taskId = task.value;
+          job.mode = P.taskOf(app.config, job).mode;
+        }
         renderJobs();
       };
       grid.appendChild(task);
 
       var product = document.createElement('select');
-      fillSelect(product, productOptions(job.taskId), job.productId ? job.productId + (job.packSize ? ':' + job.packSize : '') : '');
+      /* У полного цикла список полный: цепочка идёт мимо переборки, и
+         сужать его до перебираемых товаров неверно. */
+      fillSelect(product, productOptions(job.combined ? null : job.taskId),
+        job.productId ? job.productId + (job.packSize ? ':' + job.packSize : '') : '');
       product.onchange = function () {
         var parts = product.value.split(':');
         job.productId = parts[0] || '';

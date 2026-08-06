@@ -57,6 +57,7 @@ export default {
         case '/api/day':      return await putDay(request, env, url);
         case '/api/progress': return await postProgress(request, env, url);
         case '/api/attendance': return await postAttendance(request, env, url);
+        case '/api/claim':      return await postClaim(request, env, url);
         case '/api/login':    return await login(request, env);
         case '/api/logout':   return logout();
         case '/api/log':      return await getLog(request, env, url);
@@ -493,6 +494,52 @@ async function postAttendance(request, env, url) {
   const res = await writeDoc(env, 'day:' + date, day, null, role);
   await log(env, role, 'attendance', date, staffId + ' → ' + action + ' at ' + now);
   return json({ ok: true, attendance: day.attendance[staffId], version: res.version });
+}
+
+/*
+ * Взять общую работу себе или вернуть её в общий список.
+ *
+ * Как и остальные действия планшета, трогает ровно одно поле — staffId
+ * конкретного блока, и только у блока, помеченного общим. Подменить
+ * этим запросом план, объёмы или чужие назначения нельзя.
+ */
+async function postClaim(request, env, url) {
+  const date = String(url.searchParams.get('date') || '');
+  if (!DATE_RE.test(date)) return json({ error: 'bad date' }, 400);
+
+  const role = await roleOf(request, env);
+  if (!role) return json({ error: 'forbidden' }, 403);
+
+  const body = await readBody(request);
+  const blockId = String(body.blockId || '');
+  const staffId = String(body.staffId || '');
+  const release = Boolean(body.release);
+  if (!blockId || !staffId) return json({ error: 'bad request' }, 400);
+
+  const doc = await readDoc(env, 'day:' + date);
+  if (!doc || !doc.body || !Array.isArray(doc.body.blocks)) return json({ error: 'no day' }, 404);
+
+  const block = doc.body.blocks.find((b) => b.id === blockId);
+  if (!block) return json({ error: 'no block' }, 404);
+  if (!block.shared) return json({ error: 'not shared' }, 409);
+
+  if (release) {
+    if (block.staffId !== staffId) return json({ error: 'not yours' }, 409);
+    /* Начатую работу вернуть нельзя: замер уже идёт, и обнулять его
+       чужой рукой неправильно. */
+    if (block.status !== 'planned') return json({ error: 'already started' }, 409);
+    block.staffId = null;
+  } else {
+    /* Занятую не перехватываем: кто успел, того и работа. */
+    if (block.staffId && block.staffId !== staffId) {
+      return json({ error: 'taken', by: block.staffId }, 409);
+    }
+    block.staffId = staffId;
+  }
+
+  const res = await writeDoc(env, 'day:' + date, doc.body, null, role);
+  await log(env, role, 'claim', date, staffId + (release ? ' released ' : ' took ') + block.taskId);
+  return json({ ok: true, version: res.version });
 }
 
 async function getLog(request, env, url) {

@@ -1183,6 +1183,8 @@ check('на переборке предлагаются только переб�
 check('на остальных задачах список товаров полный', function () {
   var cfg = P.defaultConfig();
   assert.strictEqual(P.productsForTask(cfg, 'pack').length, cfg.products.length);
+  assert.strictEqual(P.productsForTask(cfg, null).length, cfg.products.length,
+    'без задачи — тоже полный: так его просит полный цикл');
 });
 
 check('количество можно задать в коробках, время считается верно', function () {
@@ -1285,6 +1287,115 @@ check('предпочтение не мешает, когда предпочит
 
   assert.ok((day.blocks || []).some(function (b) { return b.staffId === 'kris'; }),
     'работа уходит молча, без предупреждений о нарушенном предпочтении');
+});
+
+/* ---------- объединённый процесс ---------- */
+
+check('объединённая строка разворачивается в цепочку без имён', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({
+    combined: true, taskId: 'pack', mode: 'volume', qty: 180,
+    productId: 'frooties', packSize: '2lb', dest: 'amazon'
+  })];
+  P.autoAssign(cfg, day);
+
+  var steps = day.blocks.filter(function (b) { return b.shared; });
+  assert.strictEqual(steps.length, P.COMBINED_STEPS.length, 'взвесить → засилить → уложить → паллета');
+  assert.ok(steps.every(function (b) { return b.staffId === null; }),
+    'имён быть не должно — кто встанет, они решают сами');
+  assert.strictEqual(new Set(steps.map(function (b) { return b.batchId; })).size, 1,
+    'это одна партия, а не четыре несвязанные задачи');
+  assert.ok(steps.every(function (b) { return b.dest === 'amazon'; }), 'куда уезжает — общее на всю цепочку');
+});
+
+check('общая работа не считается «некому передать»', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ combined: true, mode: 'volume', qty: 100, productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+
+  var view = P.schedule(cfg, day);
+  assert.ok(!view.warnings.some(function (w) { return w.code === 'nobodyToTake'; }),
+    'работа без имени тут норма, а не проблема');
+});
+
+check('перераспределение общую работу не разбирает', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ combined: true, mode: 'volume', qty: 100, productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+  P.applyAbsence(cfg, day);
+
+  assert.ok(day.blocks.every(function (b) { return !b.shared || b.staffId === null; }),
+    'она должна лежать свободной, пока её не возьмут');
+});
+
+check('взял работу — она стала твоей', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ combined: true, mode: 'volume', qty: 100, productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+
+  var first = day.blocks[0];
+  var r = P.claimBlock(day, first.id, 'toni');
+  assert.ok(r.ok);
+  assert.strictEqual(first.staffId, 'toni');
+});
+
+check('занятую работу не перехватить', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ combined: true, mode: 'volume', qty: 100, productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+
+  var first = day.blocks[0];
+  P.claimBlock(day, first.id, 'toni');
+  var r = P.claimBlock(day, first.id, 'eva');
+  assert.strictEqual(r.error, 'taken');
+  assert.strictEqual(r.by, 'toni');
+  assert.strictEqual(first.staffId, 'toni', 'у первого её не отобрали');
+});
+
+check('взял по ошибке — можно вернуть, но только пока не начал', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ combined: true, mode: 'volume', qty: 100, productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+
+  var first = day.blocks[0];
+  P.claimBlock(day, first.id, 'toni');
+  assert.ok(P.releaseBlock(day, first.id, 'toni').ok);
+  assert.strictEqual(first.staffId, null);
+
+  P.claimBlock(day, first.id, 'toni');
+  P.markProgress(first, 'active', '2026-08-05T10:00:00.000Z');
+  assert.strictEqual(P.releaseBlock(day, first.id, 'toni').error, 'already started');
+});
+
+check('чужую работу вернуть в общий список нельзя', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ combined: true, mode: 'volume', qty: 100, productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+
+  var first = day.blocks[0];
+  P.claimBlock(day, first.id, 'toni');
+  assert.strictEqual(P.releaseBlock(day, first.id, 'eva').error, 'not yours');
+});
+
+check('обычные строки задания продолжают раздаваться по людям', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [
+    P.newJob({ combined: true, mode: 'volume', qty: 60, productId: 'frooties', packSize: '2lb' }),
+    P.newJob({ taskId: 'sort', mode: 'time', duration: 120, productId: 'jolly' })
+  ];
+  P.autoAssign(cfg, day);
+
+  var named = day.blocks.filter(function (b) { return b.staffId; });
+  assert.ok(named.length > 0, 'обычная работа как раздавалась, так и раздаётся');
+  assert.ok(named.every(function (b) { return !b.shared; }));
 });
 
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');

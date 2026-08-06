@@ -581,7 +581,19 @@
       status: 'planned',
       doneQty: 0,
       fromStaffId: null,
-      origin: origin || 'manual'
+      origin: origin || 'manual',
+
+      /* Количество могли ввести в коробках, а перевозчик — переопределить
+         вручную; и то и другое должно доехать до карточки. */
+      qtyUnit: src.qtyUnit || null,
+      carrier: src.carrier || '',
+
+      /* Общая работа: без имени, берут сами. batchId связывает шаги
+         одной партии, чтобы на экране это была одна вещь. */
+      shared: Boolean(src.shared),
+      batchId: src.batchId || null,
+      stepNo: src.stepNo || 0,
+      stepsTotal: src.stepsTotal || 0
     };
   }
 
@@ -777,6 +789,31 @@
    * Если все сессии закрыты — начинается новая. Это и есть возврат в
    * работу после случайного (или настоящего) ухода.
    */
+  /*
+   * Взять общую работу себе. Это и есть «они сами становятся»: план
+   * говорит, что надо сделать, а кто именно — решается нажатием.
+   *
+   * Занятую работу перехватить нельзя: второй нажавший получит отказ, а
+   * не молча отберёт её у первого.
+   */
+  function claimBlock(day, blockId, staffId) {
+    var b = (day.blocks || []).filter(function (x) { return x.id === blockId; })[0];
+    if (!b) return { error: 'no block' };
+    if (b.staffId && b.staffId !== staffId) return { error: 'taken', by: b.staffId };
+    b.staffId = staffId;
+    return { ok: true, block: b };
+  }
+
+  /* Вернуть работу в общий список — если взял по ошибке. */
+  function releaseBlock(day, blockId, staffId) {
+    var b = (day.blocks || []).filter(function (x) { return x.id === blockId; })[0];
+    if (!b || !b.shared) return { error: 'no block' };
+    if (b.staffId !== staffId) return { error: 'not yours' };
+    if (b.status !== 'planned') return { error: 'already started' };
+    b.staffId = null;
+    return { ok: true };
+  }
+
   function clockIn(day, staffId, iso) {
     var rec = ensureSessions(day, staffId);
     if (openSession(rec)) return day;
@@ -1178,6 +1215,9 @@
     });
 
     var orphans = blocks.filter(function (b) {
+      /* Общую работу никому не назначаем: она и должна лежать свободной,
+         пока кто-нибудь не возьмёт её сам. */
+      if (b.shared && !b.staffId) return false;
       return !b.staffId || load[b.staffId] == null;
     });
 
@@ -1388,13 +1428,64 @@
    * Существующие блоки заменяются целиком: это «собрать день заново»,
    * а не «дополнить».
    */
+  /*
+   * Шаги объединённого процесса. Один и тот же товар проходит их
+   * подряд: взвесили — засилили — уложили в коробки — поставили на
+   * паллету. Записывать это четырьмя строками менеджеру незачем.
+   */
+  var COMBINED_STEPS = ['pack', 'seal', 'box', 'pallet'];
+
+  /*
+   * Развернуть объединённую строку в шаги. Имён у шагов нет намеренно:
+   * кто на чём встанет, они решают сами и делают это лучше нас. Шаги
+   * помечены общим batchId, чтобы на экране это была одна партия, а не
+   * четыре несвязанные задачи.
+   */
+  function expandCombined(config, job) {
+    var batch = uid('batch');
+    var out = [];
+    COMBINED_STEPS.forEach(function (taskId, i) {
+      if (!(config.tasks || []).some(function (t) { return t.id === taskId; })) return;
+      out.push(blockFrom({
+        staffId: null,
+        shared: true,
+        batchId: batch,
+        stepNo: i + 1,
+        stepsTotal: 0,          // проставим ниже, когда узнаем длину
+        taskId: taskId,
+        mode: 'volume',
+        qty: Number(job.qty) || 0,
+        qtyUnit: job.qtyUnit || null,
+        productId: job.productId,
+        packSize: job.packSize,
+        variant: job.variant,
+        dest: job.dest,
+        carrier: job.carrier,
+        note: job.note
+      }));
+    });
+    out.forEach(function (b) { b.stepsTotal = out.length; });
+    return out;
+  }
+
   function autoAssign(config, day) {
     var people = availableStaff(config, day);
     day.blocks = [];
     day.overflow = [];
 
+    /*
+     * Объединённые строки разворачиваются всегда, даже если сегодня
+     * никто не вышел: это работа, которую надо сделать, и она должна
+     * быть видна. Кто её возьмёт — вопрос отдельный.
+     */
+    (day.jobs || []).forEach(function (job) {
+      if (job.combined) day.blocks = day.blocks.concat(expandCombined(config, job));
+    });
+
+    var jobs = (day.jobs || []).filter(function (j) { return !j.combined; });
+
     if (!people.length) {
-      day.overflow = (day.jobs || []).slice();
+      day.overflow = jobs.slice();
       return day;
     }
 
@@ -1411,7 +1502,7 @@
 
     var maxStreak = (config.rules && config.rules.maxSittingStreak) || 180;
 
-    var jobs = (day.jobs || []).slice().sort(function (a, b) {
+    jobs = jobs.slice().sort(function (a, b) {
       var pa = priorityOf(config, a);
       var pb = priorityOf(config, b);
       if (pa !== pb) return pa - pb;
@@ -1657,6 +1748,9 @@
     });
 
     blocks.forEach(function (b) {
+      /* Общая работа без имени — это норма, а не проблема: её берут
+         сами. Предупреждать тут не о чем. */
+      if (b.shared && !b.staffId) return;
       if (!b.staffId) {
         warnings.push({ level: 'error', code: 'nobodyToTake', title: blockTitle(config, b) });
       } else if (b.warn) {
@@ -1776,9 +1870,13 @@
     applyVolumes: applyVolumes,
     applyAbsence: applyAbsence,
     autoAssign: autoAssign,
+    expandCombined: expandCombined,
+    COMBINED_STEPS: COMBINED_STEPS,
     availableStaff: availableStaff,
     isAvailable: isAvailable,
     attendanceOf: attendanceOf,
+    claimBlock: claimBlock,
+    releaseBlock: releaseBlock,
     clockIn: clockIn,
     breakStart: breakStart,
     breakEnd: breakEnd,

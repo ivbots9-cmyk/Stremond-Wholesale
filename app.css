@@ -420,6 +420,12 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 
 .lane__body { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 
+/* Колонка свободной работы: та же карточка, но видно, что она ничья. */
+.lane--shared { border: 2px dashed #c7d2fe; background: #f8faff; }
+.lane--shared .lane__head { padding-left: 14px; }
+.task--shared { border-left: 4px solid #6366f1; }
+.task__title { font-weight: 700; font-size: 15px; }
+
 .empty { padding: 22px 14px; text-align: center; color: var(--ink-mute); font-size: 14px; }
 
 /* ───────── карточка задачи ───────── */
