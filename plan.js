@@ -57,14 +57,28 @@
    * людей не хватает: Amazon и розничные заказы режут последними,
    * Walmart — первым.
    */
+  /*
+   * carrier — то, чем партия реально уезжает. На складе оперируют
+   * перевозчиком, а не площадкой: «это на UPS» понятнее, чем «это на
+   * Amazon», потому что коробку клеят и ставят по перевозчику.
+   * Площадку оставляем — по ней считается приоритет.
+   */
   var DESTINATIONS = [
-    { key: '', title: '—', priority: 2 },
-    { key: 'amazon', title: 'Amazon', priority: 1 },
-    { key: 'orders', title: 'Orders', priority: 1 },
-    { key: 'tiktok', title: 'TikTok', priority: 2 },
-    { key: 'walmart', title: 'Walmart', priority: 3 },
-    { key: 'bulk', title: 'To bulk', priority: 3 }
+    { key: '', title: '—', priority: 2, carrier: '' },
+    { key: 'amazon', title: 'Amazon', priority: 1, carrier: 'UPS' },
+    { key: 'orders', title: 'Orders (FBM)', priority: 1, carrier: 'USPS' },
+    { key: 'tiktok', title: 'TikTok', priority: 2, carrier: 'FedEx' },
+    { key: 'walmart', title: 'Walmart', priority: 3, carrier: 'FedEx' },
+    { key: 'bulk', title: 'To bulk', priority: 3, carrier: '' }
   ];
+
+  /* Перевозчик партии. Задать можно и вручную — если разово уходит не
+     тем, чем обычно, это важнее умолчания по площадке. */
+  function carrierOf(config, block) {
+    if (block && block.carrier) return block.carrier;
+    var d = destOf(block && block.dest);
+    return (d && d.carrier) || '';
+  }
 
   var PRIORITIES = [
     { value: 1, title: 'Critical', hint: 'must ship today' },
@@ -346,7 +360,7 @@
        */
       tasks: [
         {
-          id: 'sort', title: 'Colour sorting', mode: 'time', unit: 'box',
+          id: 'sort', title: 'Colour sorting', mode: 'time', unit: 'box', sortOnly: true,
           minPerUnit: 15, priority: 1, color: '#f59e0b', sitting: true,
           byProduct: {
             /* подтверждено: 4 коробки в час */
@@ -1173,6 +1187,36 @@
 
   function unitFor(config, block) { return normOf(config, block).unit; }
 
+  /*
+   * Товары, которые имеет смысл предлагать для этой задачи. У переборки
+   * это только то, что вообще перебирают — Jolly и Starburst; выбирать
+   * из сотни позиций там не из чего, а ошибиться легко.
+   *
+   * Признак берём из самой задачи: sortOnly ставится на переборке, и
+   * список сузится сам, если операций такого рода станет больше.
+   */
+  function productsForTask(config, taskId) {
+    var all = config.products || [];
+    var task = (config.tasks || []).filter(function (t) { return t.id === taskId; })[0];
+    if (!task || !task.sortOnly) return all;
+    var sortable = all.filter(function (p) { return p.sortable; });
+    return sortable.length ? sortable : all;
+  }
+
+  /*
+   * Пересчёт введённого количества в единицу нормы. На упаковке удобнее
+   * сказать «14 коробок», а норма считается за пакет — переводим по
+   * таблице склада. Нет данных по коробке — оставляем как есть, лучше
+   * посчитать по введённому, чем молча выдумать множитель.
+   */
+  function qtyInNormUnit(config, block) {
+    var qty = Number(block.qty) || 0;
+    if (block.qtyUnit !== 'box') return qty;
+    var pk = packOf(config, block);
+    if (!pk || !pk.bagsPerBox) return qty;
+    return qty * pk.bagsPerBox;
+  }
+
   /* Ключ объёма на день. Товар, фасовка и цвет входят в ключ: «100
      пакетов Frooties 2 lb» и «300 пакетов Starburst 1 lb» — разные
      строки, складывать их в одно число нельзя. */
@@ -1206,7 +1250,8 @@
    */
   function durationOf(config, block) {
     if (block.mode === 'volume') {
-      var raw = (Number(block.qty) || 0) * normFor(config, block);
+      /* Количество могли ввести в коробках — норма считается за пакет. */
+      var raw = qtyInNormUnit(config, block) * normFor(config, block);
       return raw > 0 ? Math.max(5, Math.ceil(raw / 5) * 5) : 0;
     }
     return Math.max(0, Number(block.duration) || 0);
@@ -1669,6 +1714,9 @@
     blockTitle: blockTitle,
     expectedOutput: expectedOutput,
     boxesFromBags: boxesFromBags,
+    carrierOf: carrierOf,
+    productsForTask: productsForTask,
+    qtyInNormUnit: qtyInNormUnit,
     palletSize: palletSize,
     durationOf: durationOf,
     schedule: schedule,
