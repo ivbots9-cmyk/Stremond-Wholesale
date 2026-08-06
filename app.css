@@ -135,6 +135,14 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 .bar__group--grow { flex: 1; min-width: 260px; }
 .bar__label { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-mute); }
 .bar__buttons { display: flex; gap: 8px; }
+/* Подпись под кнопками плана: чем «План на день» отличается от
+   «+ Задача сейчас» — иначе их путают. */
+.bar__hint { margin: 8px 0 0; font-size: 12px; color: var(--ink-mute); max-width: 460px; }
+
+/* Строка «задача → кто» в настройках. */
+.picker { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.picker__title { min-width: 170px; font-weight: 600; font-size: 14px; }
+.picker .chip { min-height: 36px; padding: 0 12px; font-size: 14px; }
 
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 

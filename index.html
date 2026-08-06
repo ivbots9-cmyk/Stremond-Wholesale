@@ -47,9 +47,12 @@
   <div class="bar__group">
     <span class="bar__label" data-i18n="bar.plan">Plan</span>
     <div class="bar__buttons">
-      <button class="btn btn--sm" id="jobs-open" type="button" data-i18n="bar.jobs">Job list</button>
-      <button class="btn btn--sm btn--ghost" id="add-block" type="button" data-i18n="bar.addTask">+ Task</button>
-      <button class="btn btn--sm btn--ghost" id="rebuild" type="button" data-i18n="bar.rebuild">Rebuild</button>
+      <button class="btn btn--sm" id="jobs-open" type="button" data-i18n="bar.jobs">Plan the day</button>
+      <button class="btn btn--sm btn--ghost" id="add-block" type="button" data-i18n="bar.addTask">+ Task now</button>
+      <button class="btn btn--sm btn--ghost" id="rebuild" type="button" data-i18n="bar.rebuild">Reset from template</button>
+    </div>
+    <p class="bar__hint" data-i18n="bar.planHint">«Plan the day» — everything that has to happen today. «+ Task now» — one job for one person, right now.</p>
+    <div hidden>
     </div>
   </div>
 </section>
@@ -203,7 +206,7 @@
 <!-- ───────── задание на день ───────── -->
 <div class="modal" id="jobs-modal" hidden>
   <div class="modal__box modal__box--wide">
-    <h2 id="jobs-title" data-i18n="jobs.title">Job list for the day</h2>
+    <h2 id="jobs-title" data-i18n="jobs.title">Plan the day</h2>
     <p class="muted" data-i18n="jobs.intro">
       What needs doing — with no people attached yet. «Assign to people» spreads it
       across the shift: important first, splits work between people, and never sits
@@ -214,7 +217,6 @@
 
     <div class="jobs__act">
       <button class="btn btn--sm btn--ghost" id="job-add" type="button" data-i18n="jobs.addRow">+ Row</button>
-      <button class="btn btn--sm btn--ghost" id="jobs-tomorrow" type="button" data-i18n="jobs.fromTomorrow">Take from tomorrow</button>
       <span class="spacer"></span>
       <span class="muted" id="jobs-summary"></span>
     </div>
