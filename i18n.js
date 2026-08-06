@@ -281,7 +281,7 @@
       'music.open': 'Open {name}\u2019s music',
       'music.openMine': 'Open my music',
       'music.link': 'Music link',
-      'music.linkHint': 'Radio, playlist, YouTube channel — whatever this person puts on. Opens in a new tab; the plan stays where it was.',
+      'music.linkHint': 'Radio, playlist, YouTube channel — whatever this person listens to. The button shows up while they are clocked in. Opens in a new tab; the plan stays where it was.',
       'music.turnLength': 'Music turn, minutes',
       'music.turnLengthHint': 'How long one person\u2019s turn lasts before it passes on. Only people who are clocked in take part.',
 
@@ -561,7 +561,7 @@
       'music.open': 'Включить музыку — {name}',
       'music.openMine': 'Включить свою музыку',
       'music.link': 'Ссылка на музыку',
-      'music.linkHint': 'Радио, плейлист, канал на YouTube — что человек слушает. Откроется в новой вкладке, план останется на месте.',
+      'music.linkHint': 'Радио, плейлист, канал на YouTube — что человек слушает. Кнопка появляется, пока он на смене. Откроется в новой вкладке, план останется на месте.',
       'music.turnLength': 'Очередь музыки, минут',
       'music.turnLengthHint': 'Сколько длится очередь одного человека, прежде чем перейти дальше. Участвуют только те, кто отметился на смене.',
 
