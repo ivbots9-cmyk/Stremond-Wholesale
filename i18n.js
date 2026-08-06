@@ -38,9 +38,9 @@
       'bar.presence': 'Who is in',
       'bar.volumes': 'Volume for the day',
       'bar.plan': 'Plan',
-      'bar.jobs': 'Job list',
-      'bar.addTask': '+ Task',
-      'bar.rebuild': 'Rebuild',
+      'bar.jobs': 'Plan the day',
+      'bar.addTask': '+ Task now',
+      'bar.rebuild': 'Reset from template',
       'bar.vacation': 'vacation',
 
       /* ─── карточка задачи ─── */
@@ -81,8 +81,8 @@
       'block.unassigned': '— nobody —',
 
       /* ─── задание на день ─── */
-      'jobs.title': 'Job list for the day',
-      'jobs.intro': 'What needs doing — with no people attached yet. «Assign to people» spreads it across the shift: important first, splits work between people, and never sits anyone on sorting for more than three hours straight.',
+      'jobs.title': 'Plan the day',
+      'jobs.intro': 'Write down everything that has to happen today — products, quantities, where it ships. No names yet. Then «Assign to people» spreads it across whoever is in: important first, work split between people, nobody on sorting for more than three hours straight.',
       'jobs.addRow': '+ Row',
       'jobs.fromTomorrow': 'Take from tomorrow',
       'jobs.close': 'Close',
@@ -181,7 +181,7 @@
       'lane.nobodyHint': 'none of the available people can pick this up',
       'lane.byTime': 'by time',
       'staff.notAtWork': ' (not at work)',
-      'jobs.count': 'Job list · {n}',
+      'jobs.count': 'Plan the day · {n}',
       'jobs.noVolumeTasks': 'No quantity-based tasks today',
       'jobs.placeholder': 'Empty. Add a row — e.g. «Bagging · Frooties 2 lb — 180 bags → TikTok».',
       'jobs.colWhat': 'What', 'jobs.colProduct': 'Product', 'jobs.colColour': 'Colour',
@@ -303,6 +303,12 @@
       'block.carrier': 'Carrier',
       'block.carrierAuto': 'by destination: {carrier}',
 
+      'bar.planHint': '«Plan the day» — everything that has to happen today. «+ Task now» — one job for one person, right now.',
+      'setup.prefer': 'Usually done by',
+      'setup.preferHint': 'A nudge, not a rota: while the load is even the work goes to these people, but as soon as they are busier than the rest it goes to whoever is free. Leave empty and the system will not have an opinion.',
+      'setup.onlyStaff': 'Only these people',
+      'setup.onlyStaffHint': 'A hard limit — for things that cannot be done otherwise, like pallet building. Nobody else gets this work, even when there is no one else.',
+
       'lang.switch': 'Русский',
       'lang.switchHint': 'Switch language'
     },
@@ -327,9 +333,9 @@
       'bar.presence': 'Кто на месте',
       'bar.volumes': 'Объём на день',
       'bar.plan': 'План',
-      'bar.jobs': 'Задание',
-      'bar.addTask': '+ Задача',
-      'bar.rebuild': 'Собрать заново',
+      'bar.jobs': 'План на день',
+      'bar.addTask': '+ Задача сейчас',
+      'bar.rebuild': 'Сбросить по шаблону',
       'bar.vacation': 'отпуск',
 
       'task.start': 'Начал',
@@ -367,8 +373,8 @@
       'block.hintVolume': 'Количество × норма минут за единицу из таблицы норм.',
       'block.unassigned': '— никто —',
 
-      'jobs.title': 'Задание на день',
-      'jobs.intro': 'Что нужно сделать — без привязки к людям. Кнопка «Распределить» раскидает это по смене: важное вперёд, работу делит между людьми, дольше трёх часов подряд на переборке никого не сажает.',
+      'jobs.title': 'План на день',
+      'jobs.intro': 'Запишите всё, что должно уехать сегодня — товар, количество, куда. Имён пока не нужно. Дальше «Распределить по людям» раскидает это по тем, кто вышел: важное вперёд, работу делит между людьми, дольше трёх часов подряд на переборке никого не сажает.',
       'jobs.addRow': '+ Строка',
       'jobs.fromTomorrow': 'Взять из завтрашнего',
       'jobs.close': 'Закрыть',
@@ -461,7 +467,7 @@
       'lane.nobodyHint': 'никто из доступных не может это взять',
       'lane.byTime': 'по времени',
       'staff.notAtWork': ' (нет на работе)',
-      'jobs.count': 'Задание · {n}',
+      'jobs.count': 'План на день · {n}',
       'jobs.noVolumeTasks': 'Сегодня нет задач, которые считаются по количеству',
       'jobs.placeholder': 'Пусто. Добавьте строку — например «Фасовка · Frooties 2 lb — 180 пакетов → TikTok».',
       'jobs.colWhat': 'Что', 'jobs.colProduct': 'Товар', 'jobs.colColour': 'Цвет',
@@ -582,6 +588,12 @@
       'jobs.inBoxes': 'коробки',
       'block.carrier': 'Перевозчик',
       'block.carrierAuto': 'по площадке: {carrier}',
+
+      'bar.planHint': '«План на день» — всё, что должно уехать сегодня. «+ Задача сейчас» — одна работа одному человеку прямо сейчас.',
+      'setup.prefer': 'Обычно делают',
+      'setup.preferHint': 'Это подсказка, а не расписание: пока нагрузка ровная, работа идёт к этим людям, но как только они загружены больше остальных — уходит к свободному. Оставьте пустым, и система не будет иметь мнения.',
+      'setup.onlyStaff': 'Только эти люди',
+      'setup.onlyStaffHint': 'Жёсткое ограничение — для того, что иначе не сделать, например сборка паллеты. Другим эта работа не достанется, даже когда больше некому.',
 
       'lang.switch': 'English',
       'lang.switchHint': 'Сменить язык'

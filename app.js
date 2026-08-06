@@ -1304,19 +1304,6 @@
     });
   }
 
-  /* Забрать задание, записанное вчера на сегодня, если его писали
-     заранее и день уже успел развернуться из шаблона. */
-  function pullTomorrowJobs() {
-    S.loadDay(app.date).then(function (day) {
-      if (!day || !day.jobs || !day.jobs.length) {
-        alert(T.t('jobs.nothingTomorrow'));
-        return;
-      }
-      app.day.jobs = day.jobs;
-      renderJobs();
-    });
-  }
-
   /* ============================================================
      Настройки
      ============================================================ */
@@ -1624,6 +1611,23 @@
 
     box.appendChild(grid);
 
+    /*
+     * Кто эту работу обычно делает и кому её вообще можно. Правится
+     * здесь, а не зашито в код: расстановка у них живая, люди меняются
+     * ролями, и подкрутить это должен уметь менеджер, а не программист.
+     */
+    box.appendChild(el('h2', null, T.t('setup.prefer')));
+    box.appendChild(el('p', 'muted', T.t('setup.preferHint')));
+    app.draftConfig.tasks.forEach(function (t) {
+      box.appendChild(staffPicker(t, 'prefer', t.title));
+    });
+
+    box.appendChild(el('h2', null, T.t('setup.onlyStaff')));
+    box.appendChild(el('p', 'muted', T.t('setup.onlyStaffHint')));
+    app.draftConfig.tasks.forEach(function (t) {
+      box.appendChild(staffPicker(t, 'onlyStaff', t.title));
+    });
+
     var add = el('button', 'btn btn--sm btn--ghost', T.t('setup.newTask'));
     add.type = 'button';
     add.style.marginTop = '12px';
@@ -1635,6 +1639,34 @@
       renderTasksTab();
     };
     box.appendChild(add);
+  }
+
+  /*
+   * Строка «задача → кто». Люди выбираются нажатием, пустой список
+   * означает «система не имеет мнения» — так и написано на экране.
+   */
+  function staffPicker(task, field, title) {
+    var row = el('div', 'picker');
+    row.appendChild(el('span', 'picker__title', title));
+
+    var chips = el('div', 'chips');
+    (app.draftConfig.staff || []).forEach(function (st) {
+      if (st.status === 'left') return;
+      var on = (task[field] || []).indexOf(st.id) >= 0;
+      var chip = el('button', 'chip' + (on ? '' : ' is-vacation'), st.name);
+      chip.type = 'button';
+      chip.style.cursor = 'pointer';
+      chip.onclick = function () {
+        task[field] = task[field] || [];
+        var idx = task[field].indexOf(st.id);
+        if (idx >= 0) task[field].splice(idx, 1);
+        else task[field].push(st.id);
+        renderTasksTab();
+      };
+      chips.appendChild(chip);
+    });
+    row.appendChild(chips);
+    return row;
   }
 
   function renderStaffTab() {
@@ -2202,7 +2234,6 @@
     $('job-add').onclick = addJob;
     $('jobs-apply').onclick = applyJobs;
     $('jobs-copy').onclick = copyJobsToTomorrow;
-    $('jobs-tomorrow').onclick = pullTomorrowJobs;
 
     $('rebuild').onclick = function () {
       if (!confirm(T.t('setup.confirmRebuild'))) return;
