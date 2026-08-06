@@ -299,6 +299,10 @@
 
       'hours.period': 'Timesheet {from} — {to}',
 
+      'jobs.inBoxes': 'boxes',
+      'block.carrier': 'Carrier',
+      'block.carrierAuto': 'by destination: {carrier}',
+
       'lang.switch': 'Русский',
       'lang.switchHint': 'Switch language'
     },
@@ -574,6 +578,10 @@
       'music.services': 'Быстрые ссылки',
 
       'hours.period': 'Табель {from} — {to}',
+
+      'jobs.inBoxes': 'коробки',
+      'block.carrier': 'Перевозчик',
+      'block.carrierAuto': 'по площадке: {carrier}',
 
       'lang.switch': 'English',
       'lang.switchHint': 'Сменить язык'

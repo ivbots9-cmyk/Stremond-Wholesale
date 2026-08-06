@@ -798,6 +798,10 @@
       meta.appendChild(el('span', 'tag tag--moved', T.t('task.handedFrom', { name: from ? from.name : '—' })));
     }
     if (b.warn) meta.appendChild(el('span', 'tag tag--warn', b.warn));
+    /* Перевозчик, а не площадка: коробку клеят и ставят по нему. */
+    var carrier = P.carrierOf(app.config, b);
+    if (carrier) meta.appendChild(el('span', 'tag tag--carrier', carrier));
+
     if (item.crossedBreak) meta.appendChild(el('span', 'tag', T.t('task.withBreak', { name: item.crossedBreak.toLowerCase() })));
     if (item.overtime) meta.appendChild(el('span', 'tag tag--warn', T.t('task.overtime')));
 
@@ -1164,7 +1168,7 @@
       grid.appendChild(task);
 
       var product = document.createElement('select');
-      fillSelect(product, productOptions(), job.productId ? job.productId + (job.packSize ? ':' + job.packSize : '') : '');
+      fillSelect(product, productOptions(job.taskId), job.productId ? job.productId + (job.packSize ? ':' + job.packSize : '') : '');
       product.onchange = function () {
         var parts = product.value.split(':');
         job.productId = parts[0] || '';
@@ -1199,13 +1203,42 @@
         input.onchange = function () { job.duration = Math.max(0, Number(input.value) || 0); renderJobs(); };
       }
       amount.appendChild(input);
-      amount.appendChild(el('span', 'unit', job.mode === 'volume' ? P.unitFor(app.config, job) : T.t('unit.min')));
+
+      /*
+       * Единица переключается прямо здесь. На упаковке считают коробками
+       * («сделать 14 коробок»), а норма задана за пакет — пересчёт берёт
+       * на себя движок по таблице склада. Переключатель показываем
+       * только там, где пересчитать есть по чему.
+       */
+      var native = P.unitFor(app.config, job);
+      if (job.mode === 'volume' && canCountInBoxes(job) && native !== 'box') {
+        var unitSel = document.createElement('select');
+        unitSel.className = 'unit-select';
+        fillSelect(unitSel, [
+          { value: 'bag', title: native },
+          { value: 'box', title: T.t('jobs.inBoxes') }
+        ], job.qtyUnit || 'bag');
+        unitSel.onchange = function () {
+          job.qtyUnit = unitSel.value === 'box' ? 'box' : null;
+          renderJobs();
+        };
+        amount.appendChild(unitSel);
+      } else {
+        amount.appendChild(el('span', 'unit', job.mode === 'volume' ? native : T.t('unit.min')));
+      }
       grid.appendChild(amount);
 
+      /* Куда — площадка, под ней подписан перевозчик: на складе клеят и
+         ставят по перевозчику, а приоритет считается по площадке. */
+      var destWrap = el('div');
       var dest = document.createElement('select');
       fillSelect(dest, P.DESTINATIONS.map(function (d) { return { value: d.key, title: d.title }; }), job.dest || '');
       dest.onchange = function () { job.dest = dest.value; renderJobs(); };
-      grid.appendChild(dest);
+      destWrap.appendChild(dest);
+
+      var carrier = P.carrierOf(app.config, job);
+      if (carrier) destWrap.appendChild(el('span', 'unit unit--carrier', carrier));
+      grid.appendChild(destWrap);
 
       var del = el('button', 'row-del', '✕');
       del.type = 'button';
@@ -1224,7 +1257,7 @@
     var jobs = app.day.jobs || [];
     var minutes = jobs.reduce(function (sum, j) {
       return sum + (j.mode === 'volume'
-        ? (Number(j.qty) || 0) * P.normFor(app.config, j)
+        ? P.qtyInNormUnit(app.config, j) * P.normFor(app.config, j)
         : (Number(j.duration) || 0));
     }, 0);
     var capacity = P.availableStaff(app.config, app.day)
@@ -1235,15 +1268,27 @@
       + (minutes > capacity ? T.t('jobs.wontFit') : '');
   }
 
-  function productOptions() {
+  /*
+   * Список товаров под конкретную задачу. На переборке остаются только
+   * те, что вообще перебирают: выбирать из сотни позиций там не из чего,
+   * а промахнуться в спешке легко.
+   */
+  function productOptions(taskId) {
     var out = [{ value: '', title: T.t('block.noProduct') }];
-    (app.config.products || []).forEach(function (p) {
+    P.productsForTask(app.config, taskId).forEach(function (p) {
       out.push({ value: p.id, title: p.title });
       (p.packs || []).forEach(function (pk) {
         out.push({ value: p.id + ':' + pk.id, title: p.title + ' ' + pk.title });
       });
     });
     return out;
+  }
+
+  /* Пересчёт в коробки возможен, только если таблица склада знает,
+     сколько пакетов в коробке у этой фасовки. */
+  function canCountInBoxes(job) {
+    var pk = P.packOf(app.config, job);
+    return Boolean(pk && pk.bagsPerBox);
   }
 
   function addJob() {

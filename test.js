@@ -1155,5 +1155,53 @@ check('возврат после ухода не ломает старую за�
   assert.strictEqual(P.workedMinutes(day, 'kris'), 420, '3 ч + 4 ч');
 });
 
+/* ---------- перевозчики, фильтр товаров, коробки ---------- */
+
+check('перевозчик берётся от площадки, но правится вручную', function () {
+  var cfg = P.defaultConfig();
+  assert.strictEqual(P.carrierOf(cfg, { dest: 'amazon' }), 'UPS');
+  assert.strictEqual(P.carrierOf(cfg, { dest: 'walmart' }), 'FedEx');
+  assert.strictEqual(P.carrierOf(cfg, { dest: 'tiktok' }), 'FedEx');
+  assert.strictEqual(P.carrierOf(cfg, { dest: 'orders' }), 'USPS', 'свои заказы FBM уходят USPS');
+  assert.strictEqual(P.carrierOf(cfg, { dest: 'bulk' }), '', 'в балк ничего не уезжает');
+
+  /* Разовая отправка не тем, чем обычно, важнее умолчания. */
+  assert.strictEqual(P.carrierOf(cfg, { dest: 'amazon', carrier: 'FedEx' }), 'FedEx');
+});
+
+check('на переборке предлагаются только перебираемые товары', function () {
+  var cfg = P.defaultConfig();
+  var forSort = P.productsForTask(cfg, 'sort');
+  var all = cfg.products;
+
+  assert.ok(forSort.length < all.length, 'список должен сузиться');
+  assert.ok(forSort.every(function (p) { return p.sortable; }));
+  assert.ok(forSort.some(function (p) { return p.id === 'jolly'; }));
+  assert.ok(forSort.some(function (p) { return p.id === 'starburst'; }));
+});
+
+check('на остальных задачах список товаров полный', function () {
+  var cfg = P.defaultConfig();
+  assert.strictEqual(P.productsForTask(cfg, 'pack').length, cfg.products.length);
+});
+
+check('количество можно задать в коробках, время считается верно', function () {
+  var cfg = P.defaultConfig();
+  /* Frooties 2 lb — 18 пакетов в коробке. */
+  var inBags = { taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', qty: 180 };
+  var inBoxes = { taskId: 'pack', productId: 'frooties', packSize: '2lb', mode: 'volume', qty: 10, qtyUnit: 'box' };
+
+  assert.strictEqual(P.qtyInNormUnit(cfg, inBoxes), 180, '10 коробок × 18 = 180 пакетов');
+  assert.strictEqual(P.durationOf(cfg, inBoxes), P.durationOf(cfg, inBags),
+    'одна и та же работа, введённая двумя способами, должна занимать одно время');
+});
+
+check('без данных по коробке количество не выдумывается', function () {
+  var cfg = P.defaultConfig();
+  /* У 5 lb bagsPerBox не заполнен — множителя нет. */
+  var b = { taskId: 'pack', productId: 'jolly', packSize: '5lb', mode: 'volume', qty: 7, qtyUnit: 'box' };
+  assert.strictEqual(P.qtyInNormUnit(cfg, b), 7, 'лучше посчитать по введённому, чем угадать множитель');
+});
+
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');
 process.exit(failed ? 1 : 0);
