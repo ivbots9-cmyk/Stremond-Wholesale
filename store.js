@@ -244,6 +244,28 @@
     });
   }
 
+  /* Взять общую работу себе или вернуть её в общий список. */
+  function claim(date, blockId, staffId, release) {
+    if (state.mode === 'local') {
+      if (!can('tablet')) return Promise.resolve({ error: 'forbidden' });
+      var day = lsGet(LS_DAY + date, null);
+      if (!day) return Promise.resolve({ error: 'no day' });
+      var r = release
+        ? WHPlan.releaseBlock(day, blockId, staffId)
+        : WHPlan.claimBlock(day, blockId, staffId);
+      if (r.error) return Promise.resolve(r);
+      lsSet(LS_DAY + date, day);
+      return Promise.resolve({ ok: true });
+    }
+    return api('/api/claim?date=' + encodeURIComponent(date), {
+      method: 'POST',
+      body: JSON.stringify({ blockId: blockId, staffId: staffId, release: Boolean(release) })
+    }).then(readResult).then(function (r) {
+      if (r.version) state.dayVersion = r.version;
+      return r;
+    });
+  }
+
   function login(pin) {
     if (state.mode === 'local') {
       var expected = localPins(lsGet(LS_CONFIG, null));
@@ -302,6 +324,7 @@
     saveDayAt: saveDayAt,
     progress: progress,
     attendance: attendance,
+    claim: claim,
     login: login,
     logout: logout,
     history: history,

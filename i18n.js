@@ -309,6 +309,18 @@
       'setup.onlyStaff': 'Only these people',
       'setup.onlyStaffHint': 'A hard limit — for things that cannot be done otherwise, like pallet building. Nobody else gets this work, even when there is no one else.',
 
+      'jobs.combined': 'Full run',
+      'jobs.combinedHint': 'weigh → seal → box → pallet, one line instead of four',
+      'shared.title': 'Up for grabs',
+      'shared.hint': 'Nobody assigned — take what you are on',
+      'shared.take': 'I am on this',
+      'shared.release': 'Put it back',
+      'shared.step': 'step {n} of {total}',
+      'shared.takenBy': 'taken by {name}',
+      'shared.taken': 'someone already took it',
+      'who.available': 'Free to take',
+      'stat.upForGrabs': 'up for grabs',
+
       'lang.switch': 'Русский',
       'lang.switchHint': 'Switch language'
     },
@@ -594,6 +606,18 @@
       'setup.preferHint': 'Это подсказка, а не расписание: пока нагрузка ровная, работа идёт к этим людям, но как только они загружены больше остальных — уходит к свободному. Оставьте пустым, и система не будет иметь мнения.',
       'setup.onlyStaff': 'Только эти люди',
       'setup.onlyStaffHint': 'Жёсткое ограничение — для того, что иначе не сделать, например сборка паллеты. Другим эта работа не достанется, даже когда больше некому.',
+
+      'jobs.combined': 'Полный цикл',
+      'jobs.combinedHint': 'взвесить → засилить → уложить → паллета, одной строкой вместо четырёх',
+      'shared.title': 'Свободная работа',
+      'shared.hint': 'Имён нет — берите то, на чём стоите',
+      'shared.take': 'Беру это',
+      'shared.release': 'Вернуть в общее',
+      'shared.step': 'шаг {n} из {total}',
+      'shared.takenBy': 'взял {name}',
+      'shared.taken': 'её уже взяли',
+      'who.available': 'Можно взять',
+      'stat.upForGrabs': 'свободно взять',
 
       'lang.switch': 'English',
       'lang.switchHint': 'Сменить язык'
