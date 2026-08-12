@@ -1187,6 +1187,19 @@ check('на остальных задачах список товаров пол
     'без задачи — тоже полный: так его просит полный цикл');
 });
 
+check('на переборке товару некуда ехать, кроме как остаться или в балк', function () {
+  var cfg = P.defaultConfig();
+  var dests = P.destinationsForTask(cfg, 'sort').map(function (d) { return d.key; });
+  assert.deepStrictEqual(dests.sort(), ['', 'bulk'].sort());
+});
+
+check('на упаковке доступна и площадка, и паллета', function () {
+  var cfg = P.defaultConfig();
+  var dests = P.destinationsForTask(cfg, 'pack').map(function (d) { return d.key; });
+  assert.ok(dests.indexOf('amazon') >= 0);
+  assert.ok(dests.indexOf('pallet') >= 0);
+});
+
 check('количество можно задать в коробках, время считается верно', function () {
   var cfg = P.defaultConfig();
   /* Frooties 2 lb — 18 пакетов в коробке. */
@@ -1396,6 +1409,120 @@ check('обычные строки задания продолжают разд�
   var named = day.blocks.filter(function (b) { return b.staffId; });
   assert.ok(named.length > 0, 'обычная работа как раздавалась, так и раздаётся');
   assert.ok(named.every(function (b) { return !b.shared; }));
+});
+
+/* ---------- повторное «Распределить» не должно стирать сделанное ---------- */
+
+check('начатая и ручная задача переживают повторную раскладку', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ taskId: 'sort', mode: 'time', duration: 60, productId: 'jolly' })];
+  P.autoAssign(cfg, day);
+
+  var auto = day.blocks[0];
+  P.markProgress(auto, 'active', '2026-08-05T09:00:00.000Z');
+
+  day.blocks.push({
+    id: 'manual1', staffId: 'eva', taskId: 'clean', mode: 'time', duration: 30, share: 1, qty: 0,
+    productId: '', packSize: null, variant: '', dest: '', note: '', pinnedStart: null,
+    status: 'planned', doneQty: 0, fromStaffId: null, origin: 'manual', qtyUnit: null, carrier: '',
+    shared: false, batchId: null, stepNo: 0, stepsTotal: 0, jobId: null
+  });
+
+  P.autoAssign(cfg, day);
+
+  var stillStarted = day.blocks.filter(function (b) { return b.id === auto.id; })[0];
+  assert.ok(stillStarted, 'начатая задача не пропала');
+  assert.strictEqual(stillStarted.status, 'active', 'статус и метка времени сохранились');
+  assert.ok(day.blocks.some(function (b) { return b.id === 'manual1'; }), 'ручная задача не пропала');
+});
+
+check('повторная раскладка не выдаёт уже сделанное задание ещё раз', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ taskId: 'sort', mode: 'time', duration: 60, productId: 'jolly' })];
+  P.autoAssign(cfg, day);
+
+  var jobId = day.jobs[0].id;
+  assert.strictEqual(day.blocks.filter(function (b) { return b.jobId === jobId; }).length, 1);
+  day.blocks[0].status = 'done';
+
+  P.autoAssign(cfg, day);
+  var same = day.blocks.filter(function (b) { return b.jobId === jobId; });
+  assert.strictEqual(same.length, 1, 'сделанное задание не досыпает себе ещё блок');
+  assert.strictEqual(same[0].status, 'done');
+});
+
+check('общий цикл не разворачивается заново, если его шаги уже стоят', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ combined: true, mode: 'volume', qty: 60, productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+  var before = day.blocks.length;
+
+  P.claimBlock(day, day.blocks[0].id, 'toni');
+  P.autoAssign(cfg, day);
+
+  assert.strictEqual(day.blocks.length, before, 'шаги партии не задвоились и не пересобрались');
+  assert.strictEqual(day.blocks.filter(function (b) { return b.shared && b.staffId === 'toni'; }).length, 1,
+    'взятый шаг остался за тем, кто его взял');
+});
+
+check('коробки в задании учитываются и при автоматической раскладке, не только в подсказке', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  /* Frooties 2 lb — 18 пакетов в коробке, 10 коробок = 180 пакетов. */
+  day.jobs = [P.newJob({ taskId: 'pack', mode: 'volume', qty: 10, qtyUnit: 'box', productId: 'frooties', packSize: '2lb' })];
+  P.autoAssign(cfg, day);
+
+  var jobId = day.jobs[0].id;
+  var total = day.blocks
+    .filter(function (b) { return b.jobId === jobId; })
+    .reduce(function (sum, b) { return sum + (Number(b.qty) || 0); }, 0);
+  assert.strictEqual(total, 180, 'раздали 180 пакетов, а не 10 (перепутав коробку с пакетом)');
+  assert.strictEqual(day.overflow.length, 0, 'при верном переводе всё влезает в смену');
+});
+
+/* ---------- «сами разберут» ---------- */
+
+check('задание «сами разберут» падает в общий список без имени', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ taskId: 'sort', mode: 'time', duration: 60, productId: 'jolly', selfPick: true })];
+  P.autoAssign(cfg, day);
+
+  var mine = day.blocks.filter(function (b) { return b.jobId === day.jobs[0].id; });
+  assert.strictEqual(mine.length, 1);
+  assert.strictEqual(mine[0].staffId, null, 'заранее никому не досталось');
+  assert.ok(mine[0].shared, 'видно в «Свободная работа», как и шаги цикла');
+});
+
+check('взятое «сами разберут» задание не переигрывается заново', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ taskId: 'sort', mode: 'time', duration: 60, productId: 'jolly', selfPick: true })];
+  P.autoAssign(cfg, day);
+
+  var jobId = day.jobs[0].id;
+  var first = day.blocks.filter(function (b) { return b.jobId === jobId; })[0];
+  P.claimBlock(day, first.id, 'toni');
+  P.autoAssign(cfg, day);
+
+  var mine = day.blocks.filter(function (b) { return b.jobId === jobId; });
+  assert.strictEqual(mine.length, 1, 'блок не задвоился');
+  assert.strictEqual(mine[0].staffId, 'toni', 'остался за тем, кто взял');
+});
+
+check('жёсткий допуск действует и для «сами разберут»: паллету Еве не предложат', function () {
+  var cfg = P.defaultConfig();
+  var day = P.emptyDay('2026-08-05');
+  day.jobs = [P.newJob({ taskId: 'pallet', mode: 'volume', qty: 20, selfPick: true })];
+  P.autoAssign(cfg, day);
+
+  var eva = cfg.staff.filter(function (s) { return s.id === 'eva'; })[0];
+  var free = day.blocks.filter(function (b) { return b.shared && !b.staffId; });
+  assert.strictEqual(free.length, 1);
+  assert.ok(!P.allowedFor(cfg, eva, free[0].taskId), 'интерфейс это задание Еве не покажет');
 });
 
 console.log(failed ? '\n' + failed + ' проверок упало\n' : '\nвсе проверки прошли\n');

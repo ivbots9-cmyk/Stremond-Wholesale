@@ -89,6 +89,7 @@
     applyLangToEngine();
     T.applyStatic();
     bindStaticHandlers();
+    initDragReassign();
     load().then(function () {
       refreshTimer = setInterval(maybeRefresh, REFRESH_MS);
       setInterval(tickClock, 30000);
@@ -739,6 +740,148 @@
   }
 
   /*
+   * Перетащить карточку другому человеку — быстрый способ поправить
+   * расстановку, если она напутала: держишь и переносишь, а не лезешь
+   * в редактор задачи. Держим карточку немного (и на планшете, и на
+   * компьютере — палец или мышь, разницы для нас нет), чтобы обычный
+   * тап по «Начал»/«Готово» не превращался в перетаскивание случайно.
+   * Общую работу (shared) сюда не пускаем — у неё свой способ взять.
+   */
+  var DRAG_HOLD_MS = 260;
+  var DRAG_MOVE_TOLERANCE = 8;
+
+  function initDragReassign() {
+    var board = $('board');
+    /* Отпустил после переноса — держали на месте достаточно долго,
+       чтобы включился режим переноса. Клик по кнопке под пальцем в
+       этот момент нажимать не должен: гасим один следующий клик. */
+    var suppressClick = false;
+    board.addEventListener('click', function (e) {
+      if (!suppressClick) return;
+      suppressClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
+
+    board.addEventListener('pointerdown', function (e) {
+      if (!app.admin) return;
+      if (e.button != null && e.button !== 0) return;
+      var card = e.target.closest('.task--draggable');
+      if (!card) return;
+
+      var blockId = card.dataset.blockId;
+      var startX = e.clientX;
+      var startY = e.clientY;
+      var pointerId = e.pointerId;
+      var engaged = false;
+      var hoverLane = null;
+      var ghost = null;
+      var timer = setTimeout(engage, DRAG_HOLD_MS);
+
+      function engage() {
+        var block = (app.day.blocks || []).filter(function (b) { return b.id === blockId; })[0];
+        if (!block) return;
+        engaged = true;
+        try { card.setPointerCapture(pointerId); } catch (err) { /* тач мог уже отпустить палец */ }
+        card.classList.add('task--dragging');
+        ghost = card.cloneNode(true);
+        ghost.className = 'task task--ghost';
+        var rect = card.getBoundingClientRect();
+        ghost.style.width = rect.width + 'px';
+        document.body.appendChild(ghost);
+        placeGhost(startX, startY);
+      }
+
+      function placeGhost(x, y) {
+        if (!ghost) return;
+        ghost.style.left = x + 'px';
+        ghost.style.top = y + 'px';
+      }
+
+      function laneAt(x, y) {
+        if (!ghost) return null;
+        ghost.style.display = 'none';
+        var under = document.elementFromPoint(x, y);
+        ghost.style.display = '';
+        return under && under.closest ? under.closest('.lane[data-staff-id]') : null;
+      }
+
+      function onMove(ev) {
+        if (ev.pointerId !== pointerId) return;
+        if (!engaged) {
+          if (Math.abs(ev.clientX - startX) > DRAG_MOVE_TOLERANCE || Math.abs(ev.clientY - startY) > DRAG_MOVE_TOLERANCE) {
+            finish(false);
+          }
+          return;
+        }
+        ev.preventDefault();
+        placeGhost(ev.clientX, ev.clientY);
+        autoScroll(ev.clientY);
+        var lane = laneAt(ev.clientX, ev.clientY);
+        if (lane !== hoverLane) {
+          if (hoverLane) hoverLane.classList.remove('is-drop-target');
+          if (lane) lane.classList.add('is-drop-target');
+          hoverLane = lane;
+        }
+      }
+
+      /* У кого-то в лане может быть десяток задач — то, куда перетаскивают,
+         запросто окажется за пределами экрана. Подъезжаем сами, пока
+         палец или мышь у самого края. */
+      function autoScroll(y) {
+        var edge = 70;
+        if (y < edge) window.scrollBy(0, -(edge - y) * 0.5);
+        else if (y > window.innerHeight - edge) window.scrollBy(0, (y - (window.innerHeight - edge)) * 0.5);
+      }
+
+      function onUp(ev) {
+        if (ev.pointerId !== pointerId) return;
+        if (engaged && hoverLane) {
+          var block = (app.day.blocks || []).filter(function (b) { return b.id === blockId; })[0];
+          if (block) reassignBlock(block, hoverLane.dataset.staffId);
+        }
+        finish(true);
+      }
+
+      function onCancel(ev) {
+        if (ev.pointerId !== pointerId) return;
+        finish(true);
+      }
+
+      function finish() {
+        clearTimeout(timer);
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onCancel);
+        if (engaged) suppressClick = true;
+        card.classList.remove('task--dragging');
+        if (hoverLane) hoverLane.classList.remove('is-drop-target');
+        if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+      }
+
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onCancel);
+    });
+  }
+
+  function reassignBlock(block, staffId) {
+    if (!staffId || block.staffId === staffId) return;
+    var staff = P.indexBy(app.config.staff)[staffId];
+    if (!staff) return;
+    /* Жёсткий допуск действует и здесь: паллету Еве перетащить нельзя,
+       как её и не предложит автораспределение. */
+    if (!P.allowedFor(app.config, staff, block.taskId)) {
+      setSync(T.t('board.dragNotAllowed', { name: staff.name }), true);
+      return;
+    }
+    mutate(function () {
+      block.staffId = staffId;
+      block.fromStaffId = null;
+    }, 'task reassigned by drag to ' + staffId);
+  }
+
+  /*
    * Колонка общей работы. Имён здесь нет намеренно: план говорит, что
    * надо сделать, а кто на чём встанет — они решают сами, и делают это
    * лучше любого расчёта.
@@ -793,6 +936,9 @@
 
   function renderLane(lane) {
     var node = el('section', 'lane' + (lane.available ? '' : ' lane--off'));
+    /* Место, куда можно перетащить карточку. Только для тех, кто
+       сегодня на месте: чужую задачу отдавать тому, кого нет, незачем. */
+    if (lane.available) node.dataset.staffId = lane.staff.id;
 
     var head = el('div', 'lane__head');
     var av = el('div', 'avatar', initials(lane.staff.name));
@@ -843,6 +989,14 @@
       + (idle ? ' task--idle' : '')
       + (item.overtime ? ' task--overtime' : ''));
     node.style.borderLeftColor = task.color || '#94a3b8';
+
+    /* Перетащить карточку другому может только тот, кто правит план —
+       склад задачи только отмечает, не переставляет. Общая работа сюда
+       не попадает: у неё свой способ взять — из своего окна. */
+    if (app.admin && !b.shared) {
+      node.classList.add('task--draggable');
+      node.dataset.blockId = b.id;
+    }
 
     var time = el('div', 'task__time');
     if (idle || noTime) {
@@ -1045,13 +1199,8 @@
       return { value: t.id, title: t.title };
     }), b.taskId);
 
-    fillSelect($('block-product'), [{ value: '', title: T.t('block.noProduct') }].concat(
-      (app.config.products || []).map(function (p) { return { value: p.id, title: p.title }; })
-    ), b.productId || '');
-
-    fillSelect($('block-dest'), P.DESTINATIONS.map(function (d) {
-      return { value: d.key, title: d.title };
-    }), b.dest || '');
+    fillBlockProducts(b.taskId, b.productId);
+    fillBlockDest(b.taskId, b.dest);
 
     $('block-duration').value = b.duration || 0;
     $('block-qty').value = b.qty || 0;
@@ -1060,8 +1209,16 @@
 
     fillPackSizes(b.packSize);
     fillVariants(b.variant);
+    $('block-qty-unit').innerHTML = '';
+    $('block-qty-unit').dataset.initial = b.qtyUnit || 'bag';
     setMode(b.mode);
-    $('block-task').onchange = function () { setMode(currentMode()); };
+    $('block-task').onchange = function () {
+      fillBlockProducts($('block-task').value, '');
+      fillBlockDest($('block-task').value, '');
+      fillPackSizes(null);
+      fillVariants('');
+      setMode(currentMode());
+    };
     $('block-product').onchange = function () {
       fillPackSizes(null);
       fillVariants('');
@@ -1069,18 +1226,41 @@
     };
     $('block-pack').onchange = function () { setMode(currentMode()); };
     $('block-qty').oninput = function () { setMode('volume'); };
+    $('block-qty-unit').onchange = function () { setMode('volume'); };
 
     openModal('block-modal');
   }
 
+  /* Список товаров зависит от задачи: на переборке у нас только то, что
+     реально перебирают (Jolly, Starburst) — остальное только мешает
+     искать нужное в полусотне строк. */
+  function fillBlockProducts(taskId, current) {
+    var list = P.productsForTask(app.config, taskId);
+    fillSelect($('block-product'), [{ value: '', title: T.t('block.noProduct') }].concat(
+      list.map(function (p) { return { value: p.id, title: p.title }; })
+    ), current || '');
+  }
+
+  /* Куда товар может уехать, зависит от процесса: на переборке ему
+     некуда ехать, кроме как остаться у себя или лечь в балк — площадка
+     и паллета появляются только дальше, на упаковке. */
+  function fillBlockDest(taskId, current) {
+    fillSelect($('block-dest'), P.destinationsForTask(app.config, taskId).map(function (d) {
+      return { value: d.key, title: d.title };
+    }), current || '');
+  }
+
   /* Фасовки зависят от товара: у Frooties своя, у Jolly свои. Список
      перестраивается при смене товара, чтобы нельзя было выбрать
-     несуществующую пару. */
-  /* Цвета есть только у того, что перебирают по цветам. Для остального
-     список прячем — пустой выпадающий список только путает. */
+     несуществующую пару. На переборке фасовок нет вообще — там просто
+     разбирают входящую коробку по цвету, а не пакуют. */
+  /* Цвета есть только у того, что перебирают по цветам, но на самой
+     переборке цвет выбирать не нужно: туда кидают КОРОБКУ товара
+     целиком, а не заявку на один цвет. Цвет там прячем всегда. */
   function fillVariants(current) {
+    var task = P.taskOf(app.config, { taskId: $('block-task').value });
     var product = P.productOf(app.config, { productId: $('block-product').value });
-    var colors = (product && product.colors) || [];
+    var colors = (task && task.sortOnly) ? [] : ((product && product.colors) || []);
     fillSelect($('block-variant'), [{ value: '', title: T.t('block.allColours') }].concat(
       colors.map(function (c) { return { value: c, title: c }; })
     ), current || '');
@@ -1088,8 +1268,9 @@
   }
 
   function fillPackSizes(current) {
+    var task = P.taskOf(app.config, { taskId: $('block-task').value });
     var product = P.productOf(app.config, { productId: $('block-product').value });
-    var packs = (product && product.packs) || [];
+    var packs = (task && task.sortOnly) ? [] : ((product && product.packs) || []);
     fillSelect($('block-pack'), [{ value: '', title: T.t('block.noPack') }].concat(
       packs.map(function (pk) { return { value: pk.id, title: pk.title }; })
     ), current == null ? '' : String(current));
@@ -1116,7 +1297,27 @@
     var task = P.taskOf(app.config, draft);
     var norm = P.normFor(app.config, draft);
 
-    $('qty-unit').textContent = P.unitFor(app.config, draft);
+    /* Как и в задании на день: если по фасовке известно, сколько
+       пакетов в коробке, можно посчитать коробками — упаковщики так и
+       считают вслух, а движок сам переведёт в норму. */
+    var native = P.unitFor(app.config, draft);
+    var qtyUnitSel = $('block-qty-unit');
+    if (mode === 'volume' && canCountInBoxes(draft) && native !== 'box') {
+      if (!qtyUnitSel.options.length) {
+        fillSelect(qtyUnitSel, [
+          { value: 'bag', title: native },
+          { value: 'box', title: T.t('jobs.inBoxes') }
+        ], qtyUnitSel.dataset.initial || 'bag');
+        delete qtyUnitSel.dataset.initial;
+      }
+      qtyUnitSel.hidden = false;
+      $('qty-unit').hidden = true;
+    } else {
+      qtyUnitSel.hidden = true;
+      qtyUnitSel.innerHTML = '';
+      $('qty-unit').hidden = false;
+    }
+    $('qty-unit').textContent = native;
 
     if (mode === 'time') {
       var dur = Math.max(0, Number($('block-duration').value) || 0);
@@ -1126,12 +1327,13 @@
     } else {
       $('mode-hint').textContent = T.t('block.calcAuto', { norm: norm, unit: P.unitFor(app.config, draft) });
       var qty = Number($('block-qty').value) || 0;
+      var qtyUnit = (!qtyUnitSel.hidden && qtyUnitSel.value === 'box') ? 'box' : null;
       $('qty-calc').textContent = qty
         ? T.t('block.calcLine', {
           qty: qty,
           norm: norm,
           total: P.human(P.durationOf(app.config, {
-            taskId: draft.taskId, productId: draft.productId, packSize: draft.packSize, mode: 'volume', qty: qty
+            taskId: draft.taskId, productId: draft.productId, packSize: draft.packSize, mode: 'volume', qty: qty, qtyUnit: qtyUnit
           }))
         })
         : T.t('block.qtyFromVolume');
@@ -1149,6 +1351,7 @@
       mode: mode,
       duration: Math.max(0, Number($('block-duration').value) || 0),
       qty: Math.max(0, Number($('block-qty').value) || 0),
+      qtyUnit: (!$('block-qty-unit').hidden && $('block-qty-unit').value === 'box') ? 'box' : null,
       dest: $('block-dest').value,
       note: $('block-note').value.trim(),
       pinnedStart: $('block-pinned').value || null
@@ -1256,7 +1459,26 @@
         }
         renderJobs();
       };
-      grid.appendChild(task);
+
+      /*
+       * «Сами разберут» — задача не раскладывается по конкретным людям
+       * заранее, а падает в общий список «на взять», как и шаги общего
+       * цикла: кто раньше подошёл, тот и выбрал. Так и решают на складе
+       * сами, когда работы двух видов и не принципиально, кто на что
+       * встанет — незачем угадывать за них. У «Полного цикла» это и так
+       * поведение по умолчанию, поэтому переключатель ему не нужен.
+       */
+      var taskCell = el('div', 'jobs__task-cell');
+      taskCell.appendChild(task);
+      if (!job.combined) {
+        var pick = el('button', 'chip chip--toggle' + (job.selfPick ? ' is-on' : ''),
+          T.t('jobs.selfPick'));
+        pick.type = 'button';
+        pick.title = T.t('jobs.selfPickHint');
+        pick.onclick = function () { job.selfPick = !job.selfPick; renderJobs(); };
+        taskCell.appendChild(pick);
+      }
+      grid.appendChild(taskCell);
 
       var product = document.createElement('select');
       /* У полного цикла список полный: цепочка идёт мимо переборки, и
@@ -1272,7 +1494,10 @@
       };
       grid.appendChild(product);
 
-      var colors = (P.productOf(app.config, job) || {}).colors || [];
+      /* На переборке цвет не выбирают — туда кидают всю коробку, а не
+         заявку на один цвет; сортировка по цвету и есть сама задача. */
+      var jobTask = P.taskOf(app.config, job.combined ? { taskId: null } : job);
+      var colors = (jobTask && jobTask.sortOnly) ? [] : ((P.productOf(app.config, job) || {}).colors || []);
       var variant = document.createElement('select');
       fillSelect(variant, [{ value: '', title: colors.length ? T.t('block.allColours') : '—' }].concat(
         colors.map(function (c) { return { value: c, title: c }; })
@@ -1326,7 +1551,8 @@
          ставят по перевозчику, а приоритет считается по площадке. */
       var destWrap = el('div');
       var dest = document.createElement('select');
-      fillSelect(dest, P.DESTINATIONS.map(function (d) { return { value: d.key, title: d.title }; }), job.dest || '');
+      fillSelect(dest, P.destinationsForTask(app.config, job.combined ? null : job.taskId)
+        .map(function (d) { return { value: d.key, title: d.title }; }), job.dest || '');
       dest.onchange = function () { job.dest = dest.value; renderJobs(); };
       destWrap.appendChild(dest);
 
@@ -1369,8 +1595,14 @@
    */
   function productOptions(taskId) {
     var out = [{ value: '', title: T.t('block.noProduct') }];
+    /* На переборке фасовок нет — туда кидают входящую коробку целиком,
+       а не заявку на конкретный «1 lb» или «2 lb». Строки по фасовкам
+       там только путают. */
+    var task = P.taskOf(app.config, { taskId: taskId });
+    var sortOnly = Boolean(task && task.sortOnly);
     P.productsForTask(app.config, taskId).forEach(function (p) {
       out.push({ value: p.id, title: p.title });
+      if (sortOnly) return;
       (p.packs || []).forEach(function (pk) {
         out.push({ value: p.id + ':' + pk.id, title: p.title + ' ' + pk.title });
       });
@@ -2345,8 +2577,14 @@
     $('today').onclick = function () { goDate(P.todayISO()); };
 
     $('admin-toggle').onclick = function () {
+      /* Раньше клик по своей же роли сразу разлогинивал — менеджер жал на
+         неё, чтобы что-то найти, и внезапно оказывался выкинутым из
+         системы. У менеджера и админа выход уже есть отдельной кнопкой
+         внутри настроек, так что тут при повторном клике открываем
+         настройки — там же стата, часы и история. У склада своих
+         настроек нет, так что для него клик по-прежнему выходит. */
       if (app.role) {
-        S.logout().then(function () { syncRole(); render(); });
+        if (app.admin) openSetup(); else S.logout().then(function () { syncRole(); render(); });
       } else {
         askPin();
       }
@@ -2368,6 +2606,20 @@
         app.day.volumes = volumes;
         app.day.absent = absent;
       }, 'day rebuilt from template');
+    };
+
+    /* Полная очистка дня: ни шаблона, ни старого задания — чистый лист.
+       Кто отметился на смене, не трогаем: это факт, а не часть плана. */
+    $('reset-day').onclick = function () {
+      if (!confirm(T.t('setup.confirmResetDay'))) return;
+      mutate(function () {
+        var attendance = app.day.attendance;
+        var absent = app.day.absent;
+        app.day = P.emptyDay(app.date);
+        app.day.blocks = [];
+        app.day.attendance = attendance;
+        app.day.absent = absent;
+      }, 'day cleared');
     };
 
     $('block-save').onclick = saveBlock;

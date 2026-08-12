@@ -161,6 +161,16 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 .chip.is-off { background: #fef2f2; border-color: #fecaca; color: #991b1b; text-decoration: line-through; }
 .chip.is-vacation { background: #f8fafc; color: var(--ink-mute); border-style: dashed; cursor: default; }
 
+.jobs__task-cell { display: flex; flex-direction: column; gap: 6px; }
+.chip--toggle {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--ink-mute);
+  align-self: flex-start;
+}
+.chip--toggle.is-on { background: #ecfdf5; border-color: #6ee7b7; color: #047857; font-weight: 600; }
+
 .volumes { display: flex; gap: 10px; flex-wrap: wrap; }
 .volume {
   display: flex;
@@ -443,6 +453,28 @@ h2 { margin: 0 0 12px; font-size: 20px; }
 .task--overtime { background: #fff7ed; }
 .task--idle { background: #f8fafc; }
 .task--idle .task__time b { color: var(--ink-mute); }
+
+/* Перетаскивание карточки другому человеку — держишь и переносишь. */
+.task--draggable {
+  cursor: grab;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.task--dragging { opacity: .35; }
+.task--ghost {
+  position: fixed;
+  z-index: 999;
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotate(-2deg);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, .28);
+  opacity: .96;
+}
+.lane.is-drop-target {
+  outline: 3px solid #2563eb;
+  outline-offset: -3px;
+}
 
 .task__time {
   display: flex;
