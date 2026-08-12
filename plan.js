@@ -64,13 +64,28 @@
    * Площадку оставляем — по ней считается приоритет.
    */
   var DESTINATIONS = [
-    { key: '', title: '—', priority: 2, carrier: '' },
+    { key: '', title: 'Nowhere yet (saved)', priority: 2, carrier: '' },
     { key: 'amazon', title: 'Amazon', priority: 1, carrier: 'UPS' },
     { key: 'orders', title: 'Orders (FBM)', priority: 1, carrier: 'USPS' },
     { key: 'tiktok', title: 'TikTok', priority: 2, carrier: 'FedEx' },
     { key: 'walmart', title: 'Walmart', priority: 3, carrier: 'FedEx' },
+    { key: 'pallet', title: 'Onto pallet', priority: 2, carrier: '' },
     { key: 'bulk', title: 'To bulk', priority: 3, carrier: '' }
   ];
+
+  /*
+   * Куда может уйти товар, зависит от процесса. На переборке ему пока
+   * некуда ехать — она просто готовит рассортированный запас: либо
+   * остаётся у себя (сейвится), либо идёт в общий балк. Площадка и
+   * паллета появляются дальше по цепочке, когда товар уже упакован.
+   */
+  function destinationsForTask(config, taskId) {
+    var task = taskOf(config, { taskId: taskId });
+    if (task && task.sortOnly) {
+      return DESTINATIONS.filter(function (d) { return d.key === '' || d.key === 'bulk'; });
+    }
+    return DESTINATIONS;
+  }
 
   /* Перевозчик партии. Задать можно и вручную — если разово уходит не
      тем, чем обычно, это важнее умолчания по площадке. */
@@ -593,7 +608,13 @@
       shared: Boolean(src.shared),
       batchId: src.batchId || null,
       stepNo: src.stepNo || 0,
-      stepsTotal: src.stepsTotal || 0
+      stepsTotal: src.stepsTotal || 0,
+
+      /* Строка задания, из которой блок раскидан. Нужна, чтобы при
+         повторном «Распределить» не насчитать уже сделанное дважды и
+         не развернуть общий цикл заново. У ручных задач и добивки
+         смены её нет. */
+      jobId: src.jobId || null
     };
   }
 
@@ -1450,6 +1471,7 @@
         staffId: null,
         shared: true,
         batchId: batch,
+        jobId: job.id,
         stepNo: i + 1,
         stepsTotal: 0,          // проставим ниже, когда узнаем длину
         taskId: taskId,
@@ -1470,19 +1492,55 @@
 
   function autoAssign(config, day) {
     var people = availableStaff(config, day);
-    day.blocks = [];
+
+    /*
+     * Повторное «Распределить» не должно стирать то, что уже сделали
+     * или добавили руками: начатые и завершённые блоки и задачи
+     * «+ Задача сейчас» остаются на месте. Пересобираем только то, что
+     * сама раскладка создала (auto/fill) и что ещё не начали — именно
+     * это и можно спокойно разложить заново.
+     */
+    var prevBlocks = day.blocks || [];
+    var keep = prevBlocks.filter(function (b) {
+      return b.status !== 'planned' || (b.origin !== 'auto' && b.origin !== 'fill');
+    });
+    day.blocks = keep.slice();
     day.overflow = [];
 
     /*
-     * Объединённые строки разворачиваются всегда, даже если сегодня
-     * никто не вышел: это работа, которую надо сделать, и она должна
-     * быть видна. Кто её возьмёт — вопрос отдельный.
+     * Объединённые строки разворачиваются один раз: если для задания
+     * уже стоят блоки (хоть один — взятый, начатый или просто
+     * разложенный шаг), партия уже на доске, трогать её не нужно.
      */
     (day.jobs || []).forEach(function (job) {
-      if (job.combined) day.blocks = day.blocks.concat(expandCombined(config, job));
+      if (!job.combined) return;
+      var already = keep.some(function (b) { return b.jobId === job.id; });
+      if (!already) day.blocks = day.blocks.concat(expandCombined(config, job));
     });
 
-    var jobs = (day.jobs || []).filter(function (j) { return !j.combined; });
+    /*
+     * «Сами разберут» — то же самое, что шаг общего цикла, только один:
+     * блок без имени падает в общий список, и первый, кто дошёл до
+     * планшета, забирает его себе. Раскладывать заранее тут нечего.
+     */
+    (day.jobs || []).forEach(function (job) {
+      if (job.combined || !job.selfPick) return;
+      var already = keep.some(function (b) { return b.jobId === job.id; });
+      if (already) return;
+      var left = job.mode === 'volume' ? (Number(job.qty) || 0) : (Number(job.duration) || 0);
+      if (left <= 0) return;
+      /* Без origin: 'auto'/'fill' — как и шаги общего цикла, это делает
+         блок неприкасаемым при повторной раскладке (см. keep выше), а
+         не пересобираемым по новой при каждом клике «Распределить». */
+      day.blocks.push(blockFrom({
+        staffId: null, shared: true, jobId: job.id, batchId: uid('batch'), stepNo: 1, stepsTotal: 1,
+        taskId: job.taskId, mode: job.mode, qty: job.qty, duration: job.duration, qtyUnit: job.qtyUnit,
+        productId: job.productId, packSize: job.packSize, variant: job.variant,
+        dest: job.dest, carrier: job.carrier, note: job.note
+      }));
+    });
+
+    var jobs = (day.jobs || []).filter(function (j) { return !j.combined && !j.selfPick; });
 
     if (!people.length) {
       day.overflow = jobs.slice();
@@ -1500,6 +1558,23 @@
       streak[s.id] = 0;
     });
 
+    /* Сохранённые блоки уже занимают время у своих людей — иначе им
+       насчитают ту же работу дважды при повторной раскладке. */
+    keep.forEach(function (b) {
+      if (b.staffId && Object.prototype.hasOwnProperty.call(load, b.staffId)) {
+        load[b.staffId] += durationOf(config, b);
+      }
+    });
+
+    /* И уже закрывают часть самого задания — досчитывать нужно только
+       остаток, а не весь объём заново. */
+    var covered = {};
+    keep.forEach(function (b) {
+      if (!b.jobId) return;
+      covered[b.jobId] = (covered[b.jobId] || 0)
+        + (b.mode === 'volume' ? qtyInNormUnit(config, b) : (Number(b.duration) || 0));
+    });
+
     var maxStreak = (config.rules && config.rules.maxSittingStreak) || 180;
 
     jobs = jobs.slice().sort(function (a, b) {
@@ -1512,7 +1587,14 @@
     jobs.forEach(function (job) {
       var norm = normFor(config, job);
       var sitting = taskOf(config, job).sitting;
-      var left = job.mode === 'volume' ? (Number(job.qty) || 0) : (Number(job.duration) || 0);
+      /* Количество могли ввести коробками (qtyUnit: 'box') — переводим
+         в единицу нормы один раз здесь, и дальше по циклу работаем уже
+         с пакетами/минутами, как и раньше. Без этого перевода коробка
+         бралась бы за пакет, и раздать успевали бы в разы меньше.
+         Из общего объёма вычитаем то, что уже сохранено с прошлого
+         распределения (см. covered выше). */
+      var total = job.mode === 'volume' ? qtyInNormUnit(config, job) : (Number(job.duration) || 0);
+      var left = Math.max(0, total - (covered[job.id] || 0));
       if (left <= 0) return;
 
       /*
@@ -1574,7 +1656,7 @@
           var qty = norm > 0 ? Math.floor(chunkMin / norm) : left;
           if (qty > left) qty = left;
           block = blockFrom({
-            staffId: pick.id, taskId: job.taskId, mode: 'volume',
+            staffId: pick.id, taskId: job.taskId, mode: 'volume', jobId: job.id,
             qty: qty, productId: job.productId, packSize: job.packSize,
             variant: job.variant, dest: job.dest, note: job.note
           }, 'auto');
@@ -1582,7 +1664,7 @@
         } else {
           var mins = Math.min(left, chunkMin);
           block = blockFrom({
-            staffId: pick.id, taskId: job.taskId, mode: 'time',
+            staffId: pick.id, taskId: job.taskId, mode: 'time', jobId: job.id,
             duration: mins, productId: job.productId, packSize: job.packSize,
             variant: job.variant, dest: job.dest, note: job.note
           }, 'auto');
@@ -1638,7 +1720,7 @@
 
   function jobMinutes(config, job) {
     return job.mode === 'volume'
-      ? (Number(job.qty) || 0) * normFor(config, job)
+      ? qtyInNormUnit(config, job) * normFor(config, job)
       : (Number(job.duration) || 0);
   }
 
@@ -1849,6 +1931,7 @@
   return {
     WEEKDAYS: WEEKDAYS,
     DESTINATIONS: DESTINATIONS,
+    destinationsForTask: destinationsForTask,
     PRIORITIES: PRIORITIES,
     STATUSES: STATUSES,
     plural: plural,

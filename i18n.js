@@ -41,6 +41,7 @@
       'bar.jobs': 'Plan the day',
       'bar.addTask': '+ Task now',
       'bar.rebuild': 'Reset from template',
+      'bar.resetDay': 'Clear the day',
       'bar.vacation': 'vacation',
 
       /* ─── карточка задачи ─── */
@@ -179,6 +180,7 @@
       'lane.perHour': '{value} {unit} / hour',
       'lane.nobodyTitle': 'Nobody to take this',
       'lane.nobodyHint': 'none of the available people can pick this up',
+      'board.dragNotAllowed': '{name} cannot be given this task — it is off-limits to them',
       'lane.byTime': 'by time',
       'staff.notAtWork': ' (not at work)',
       'jobs.count': 'Plan the day · {n}',
@@ -224,6 +226,7 @@
       'setup.breaksIntro': 'A break does not cancel a task, it pushes its end: if lunch lands mid-packing, packing finishes later.',
       'setup.addBreak': '+ Break', 'setup.breakName': 'Break',
       'setup.confirmRebuild': 'Rebuild the day from the template? Manual edits to this day will be lost.',
+      'setup.confirmResetDay': 'Clear the whole plan for this day — job list, tasks, volumes? Who is in stays as is. This cannot be undone.',
       'setup.changedElsewhere': 'settings changed on another device, reloaded',
       'sync.planChanged': 'the plan changed on another device, reloaded',
       'sync.noRights': 'no rights to edit',
@@ -311,6 +314,8 @@
 
       'jobs.combined': 'Full run',
       'jobs.combinedHint': 'weigh → seal → box → pallet, one line instead of four',
+      'jobs.selfPick': 'Let them choose',
+      'jobs.selfPickHint': 'Not pre-assigned to anyone — goes to "Up for grabs", whoever gets to it first takes it.',
       'shared.title': 'Up for grabs',
       'shared.hint': 'Nobody assigned — take what you are on',
       'shared.take': 'I am on this',
@@ -348,6 +353,7 @@
       'bar.jobs': 'План на день',
       'bar.addTask': '+ Задача сейчас',
       'bar.rebuild': 'Сбросить по шаблону',
+      'bar.resetDay': 'Очистить день',
       'bar.vacation': 'отпуск',
 
       'task.start': 'Начал',
@@ -477,6 +483,7 @@
       'lane.perHour': '{value} {unit} / час',
       'lane.nobodyTitle': 'Некому передать',
       'lane.nobodyHint': 'никто из доступных не может это взять',
+      'board.dragNotAllowed': '{name} нельзя дать эту задачу — ему/ей это не положено',
       'lane.byTime': 'по времени',
       'staff.notAtWork': ' (нет на работе)',
       'jobs.count': 'План на день · {n}',
@@ -522,6 +529,7 @@
       'setup.breaksIntro': 'Перерыв не отменяет задачу, а сдвигает её конец: попал обед в середину упаковки — упаковка закончится позже.',
       'setup.addBreak': '+ Перерыв', 'setup.breakName': 'Перерыв',
       'setup.confirmRebuild': 'Собрать день заново из шаблона? Ручные правки этого дня пропадут.',
+      'setup.confirmResetDay': 'Очистить весь план на этот день — задание, задачи, объёмы? Кто на месте — останется как есть. Отменить нельзя.',
       'setup.changedElsewhere': 'настройки изменили с другого устройства, перечитано',
       'sync.planChanged': 'план изменили с другого устройства, перечитано',
       'sync.noRights': 'нет прав на правку',
@@ -609,6 +617,8 @@
 
       'jobs.combined': 'Полный цикл',
       'jobs.combinedHint': 'взвесить → засилить → уложить → паллета, одной строкой вместо четырёх',
+      'jobs.selfPick': 'Сами разберут',
+      'jobs.selfPickHint': 'Не закреплена ни за кем заранее — уходит в «Свободная работа», кто первый подошёл, тот и взял.',
       'shared.title': 'Свободная работа',
       'shared.hint': 'Имён нет — берите то, на чём стоите',
       'shared.take': 'Беру это',

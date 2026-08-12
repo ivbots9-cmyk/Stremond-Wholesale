@@ -50,6 +50,7 @@
       <button class="btn btn--sm" id="jobs-open" type="button" data-i18n="bar.jobs">Plan the day</button>
       <button class="btn btn--sm btn--ghost" id="add-block" type="button" data-i18n="bar.addTask">+ Task now</button>
       <button class="btn btn--sm btn--ghost" id="rebuild" type="button" data-i18n="bar.rebuild">Reset from template</button>
+      <button class="btn btn--sm btn--danger" id="reset-day" type="button" data-i18n="bar.resetDay">Clear the day</button>
     </div>
     <p class="bar__hint" data-i18n="bar.planHint">«Plan the day» — everything that has to happen today. «+ Task now» — one job for one person, right now.</p>
     <div hidden>
@@ -175,6 +176,7 @@
       <div class="row">
         <input id="block-qty" type="number" min="0" step="1" inputmode="numeric">
         <span class="unit" id="qty-unit">pcs</span>
+        <select class="unit-select" id="block-qty-unit" hidden></select>
       </div>
       <p class="muted" id="qty-calc"></p>
     </label>
